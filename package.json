@@ -2,12 +2,25 @@
   "name": "magpie-ua-switcher",
   "version": "1.1.0",
   "description": "Switch the User-Agent magpie sends upstream (Codex CLI / Claude Code / pi / ZCode / custom) from a tiny local web page",
-  "keywords": ["magpie", "opencode", "plugin", "user-agent", "headers", "gateway", "codex", "claude-code", "pi"],
+  "keywords": [
+    "magpie",
+    "opencode",
+    "plugin",
+    "user-agent",
+    "headers",
+    "gateway",
+    "codex",
+    "claude-code",
+    "pi"
+  ],
   "license": "MIT",
   "type": "module",
   "main": "index.mjs",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/x1051445024/magpie-ua-switcher.git"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%23141a22%22%2F%3E%3Cpath%20d%3D%22M16%2025h24m0%200-7-7m7%207-7%207%22%20stroke%3D%22%237ab0ff%22%20stroke-width%3D%225%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M48%2039H24m0%200%207-7m-7%207%207%207%22%20stroke%3D%22%234ade80%22%20stroke-width%3D%225%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20fill%3D%22none%22%2F%3E%3C%2Fsvg%3E"
   }
 }
