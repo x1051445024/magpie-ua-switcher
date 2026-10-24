@@ -22,6 +22,8 @@ magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 
 `plugin add` 会通知运行中的 magpie 重载插件宿主，无需重启应用。端口处理自愈：冲突时若已有健康的本插件实例在服务则让位给它，否则重试绑定 30 秒；此后请求钩子每分钟自检重绑，直到端口有人接管。
 
+**开发调试**：本目录就是 git 仓库。改代码 → push → `magpie plugin update github:x1051445024/magpie-ua-switcher`，magpie 的托管安装即更新。
+
 ## 切换方式（三选一）
 
 1. **网页开关**：浏览器打开 <http://127.0.0.1:3426>，点按钮即切换，当前选中高亮。

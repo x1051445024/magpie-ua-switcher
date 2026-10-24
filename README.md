@@ -29,6 +29,8 @@ magpie plugin add ./magpie-ua-switcher
 
 `plugin add` tells the running magpie to reload its plugin host — no app restart needed. Port handling is self-healing: on a conflict the plugin defers to another healthy instance of itself if one answers, keeps retrying for 30 seconds, and the request hook re-attempts the bind once a minute for as long as no instance holds the port.
 
+**Development**: this folder is the git repo itself. Edit, commit, push, then run `magpie plugin update github:x1051445024/magpie-ua-switcher` to pull the new version into magpie's managed install.
+
 ## Switch profiles
 
 1. **Web page**: open <http://127.0.0.1:3426> and click a button; the active profile is highlighted.
