@@ -27,7 +27,7 @@ Or from a local folder:
 magpie plugin add ./magpie-ua-switcher
 ```
 
-`plugin add` tells the running magpie to reload its plugin host — no app restart needed. If the switcher's web page port is briefly held by another CLI-spawned host, the plugin retries binding for up to 30 seconds.
+`plugin add` tells the running magpie to reload its plugin host — no app restart needed. Port handling is self-healing: on a conflict the plugin defers to another healthy instance of itself if one answers, keeps retrying for 30 seconds, and the request hook re-attempts the bind once a minute for as long as no instance holds the port.
 
 ## Switch profiles
 

@@ -20,7 +20,7 @@ magpie plugin add github:你的用户名/magpie-ua-switcher   # git 直装
 magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 ```
 
-`plugin add` 会通知运行中的 magpie 重载插件宿主，无需重启应用。若网页端口恰被 CLI 临时宿主短暂占用，插件会自动重试绑定（最多 30 秒）。
+`plugin add` 会通知运行中的 magpie 重载插件宿主，无需重启应用。端口处理自愈：冲突时若已有健康的本插件实例在服务则让位给它，否则重试绑定 30 秒；此后请求钩子每分钟自检重绑，直到端口有人接管。
 
 ## 切换方式（三选一）
 

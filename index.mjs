@@ -305,6 +305,13 @@ async function chatHeaders(msg, out) {
   } catch {
     return
   }
+  // watchdog: when no instance of ours holds the switcher port (a deferred-to
+  // sibling died, or the bind kept failing), re-attempt at most once a minute
+  if (server === null && Date.now() - lastBindTry > 60000) {
+    try {
+      bindAttempt()
+    } catch {}
+  }
   if (cache.mtime !== lastAppliedMtime) {
     lastAppliedMtime = cache.mtime
     try {
@@ -339,12 +346,14 @@ async function chatHeaders(msg, out) {
 
 // ---- the web switcher -------------------------------------------------------------
 
-let server = null
+let server = null // Bun server, or "external" while another healthy instance holds the port
+let lastBindTry = 0
 
 function state() {
   const cfg = loadCfg()
   const profiles = effectiveProfiles(cfg)
   return {
+    plugin: "ua-switcher",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
@@ -437,36 +446,46 @@ async function handle(req) {
   return json({ error: "not found" }, 404)
 }
 
+function bindAttempt() {
+  lastBindTry = Date.now()
+  try {
+    server = Bun.serve({ hostname: "127.0.0.1", port: loadCfg().port, fetch: handle })
+    globalThis.__uaSwitcherServer = server
+    note(`web switcher ready at http://127.0.0.1:${server.port}`)
+    return true
+  } catch {}
+  // the port is held: a healthy sibling instance (e.g. a CLI-spawned host) is
+  // fine to defer to; it may outlive its CLI by a long time, and when it dies
+  // the hook's watchdog re-binds here.
+  try {
+    const port = loadCfg().port
+    fetch(`http://127.0.0.1:${port}/state`)
+      .then((r) => r.json())
+      .then((s) => {
+        if (s && s.plugin === "ua-switcher" && server === null) {
+          server = "external"
+          note(`another ua-switcher instance serves port ${port}; deferring to it`)
+        }
+      })
+      .catch(() => {})
+  } catch {}
+  return false
+}
+
 function startServer() {
   try {
     if (globalThis.__uaSwitcherServer) globalThis.__uaSwitcherServer.stop(true)
   } catch {}
-  const port = loadCfg().port
-  const bind = () => {
-    server = Bun.serve({ hostname: "127.0.0.1", port, fetch: handle })
-    globalThis.__uaSwitcherServer = server
-    note(`web switcher ready at http://127.0.0.1:${server.port}`)
-    return true
-  }
-  try {
-    bind()
-    return
-  } catch {}
-  // a transient CLI-spawned host (every `magpie plugin …` command runs one)
-  // can hold the port for a moment while the resident host reloads — retry
-  // briefly. unref'd so a transient host still exits with its CLI instead of
-  // being kept alive by this timer alone.
+  if (bindAttempt()) return
   let tries = 0
   const t = setInterval(() => {
     tries++
-    if (tries > 30) {
+    if (tries > 30 || server === "external") {
       clearInterval(t)
-      note(`web switcher failed on port ${port}; rewriting still active — switch by editing ${CONFIG_PATH}`, "error")
+      if (server === null) note(`web switcher failed on port ${loadCfg().port}; rewriting still active — switch by editing ${CONFIG_PATH}`, "error")
       return
     }
-    try {
-      if (bind()) clearInterval(t)
-    } catch {}
+    if (bindAttempt()) clearInterval(t)
   }, 1000)
   try {
     t.unref?.()
