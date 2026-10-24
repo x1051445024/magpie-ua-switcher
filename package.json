@@ -1,0 +1,13 @@
+{
+  "name": "magpie-ua-switcher",
+  "version": "1.1.0",
+  "description": "Switch the User-Agent magpie sends upstream (Codex CLI / Claude Code / pi / ZCode / custom) from a tiny local web page",
+  "keywords": ["magpie", "opencode", "plugin", "user-agent", "headers", "gateway", "codex", "claude-code", "pi"],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.mjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_GITHUB_HANDLE/magpie-ua-switcher.git"
+  }
+}
