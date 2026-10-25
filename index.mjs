@@ -782,7 +782,7 @@ for(var id in S.customProfiles){
 if(extra&&extra.id&&!extra.del)out[extra.id]=extra.prof
 return out
 }
-async function load(){S=await (await fetch("/state")).json());render()}
+async function load(){S=await (await fetch("/state")).json();render()}
 
 document.getElementById("grid").addEventListener("click",function(e){var b=e.target.closest("button.p");if(!b)return
 fetch("/set/"+encodeURIComponent(b.dataset.id),{method:"POST"}).then(load).catch(function(){flash("切换失败",true)})})
