@@ -632,10 +632,12 @@ function state() {
 function page() {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>magpie UA 切换器</title><style>
+<title>magpie UA 切换器</title>
+<script>try{var v=localStorage.getItem("ua-switcher-font");if(v)document.documentElement.style.setProperty("--fs",Number(v)+"px")}catch(e){}</script>
+<style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#111418;color:#e8eaed;font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;font-size:clamp(15px,.7vw + 12.5px,18px);line-height:1.6;display:flex;justify-content:center;padding:28px 16px 48px}
+body{margin:0;min-height:100vh;background:#111418;color:#e8eaed;font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;font-size:var(--fs,clamp(15px,.7vw + 12.5px,18px));line-height:1.6;display:flex;justify-content:center;padding:28px 16px 48px}
 main{width:100%;max-width:720px}
 h1{font-size:clamp(19px,1vw + 16px,24px);margin:0}
 h2{font-size:1.02em;margin:0 0 10px;color:#c7cbd1}
@@ -651,6 +653,8 @@ button.p.on::after{content:"当前生效";font-size:.72em;color:#7ab0ff}
 button.p span{font-size:.95em}
 button.p code{font-size:.72em;color:#9aa0a6}
 .in,select,textarea,input[type=text]{width:100%;padding:7px 10px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;font:inherit;font-size:.9em}
+input[type=range]{accent-color:#7ab0ff;width:190px}
+input[type=number]{width:86px;padding:7px 10px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;font:inherit;font-size:.9em;text-align:center}
 textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:.82em}
 textarea:focus,input:focus,select:focus{outline:none;border-color:#4a5261}
 label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
@@ -727,6 +731,16 @@ label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
 </div>
 </div>
 <button class="btn" id="pfnew">＋ 新增档案</button>
+</div>
+
+<div class="card">
+<h2>页面外观</h2>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+<input type="range" id="fsr" min="12" max="24" step="1" aria-label="字体大小">
+<input type="number" id="fsn" min="12" max="24" step="1" aria-label="字体大小（像素）">
+<span id="fslabel" style="font-size:.78em;color:#9aa0a6"></span>
+<button class="btn" id="fsreset">重置（自适应）</button>
+</div>
 </div>
 
 <div class="box">
@@ -824,6 +838,21 @@ document.getElementById("plist").addEventListener("click",function(e){
 var d=e.target.closest("[data-del]"),t=e.target.closest("[data-edit]")
 if(d){post({profiles:collectProfiles({id:d.dataset.del,del:true})}).then(function(){flash("档案已删除");load()}).catch(function(er){flash(er.message,true)})}
 else if(t)openForm(t.dataset.edit)})
+var FSK="ua-switcher-font"
+function applyFs(v){
+var lbl=document.getElementById("fslabel")
+if(v){document.documentElement.style.setProperty("--fs",v+"px");lbl.textContent="固定 "+v+"px"}
+else{document.documentElement.style.removeProperty("--fs");lbl.textContent="自适应（随窗口）"}}
+function initFs(){
+var r=document.getElementById("fsr"),n=document.getElementById("fsn")
+var v=Number(localStorage.getItem(FSK))
+var ok=v>=12&&v<=24
+if(ok){r.value=v;n.value=v}else{r.value=16;n.value=""}
+applyFs(ok?v:null)
+r.oninput=function(){n.value=r.value;applyFs(Number(r.value));localStorage.setItem(FSK,r.value)}
+n.onchange=function(){var x=Math.round(Number(n.value));if(!(x>=12&&x<=24))x=16;n.value=x;r.value=x;applyFs(x);localStorage.setItem(FSK,String(x))}
+document.getElementById("fsreset").onclick=function(){localStorage.removeItem(FSK);r.value=16;n.value="";applyFs(null)}}
+initFs()
 load()
 </script>
 </main></body></html>`

@@ -34,6 +34,7 @@ magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 - **排除列表**：chip 式增删不改写的 provider
 - **按 provider 覆盖**：每个 provider 一个下拉（跟随全局 / 关闭 / 任一档案）
 - **自定义档案**：新增 / 编辑 / 删除（UA + 通用、anthropic、openai 三组头，每行「键: 值」）；双形态（`forms`）档案为防编辑降级，网页只读、仍走配置文件
+- **页面字号**：滑块或数值（12–24px）固定字号，重置则恢复随窗口自适应；偏好存在浏览器本地（localStorage），不动配置文件
 
 也可以 curl 或直接改配置文件（热生效）：
 

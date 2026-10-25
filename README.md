@@ -39,6 +39,7 @@ magpie plugin add ./magpie-ua-switcher
 - **Exclusions**: add/remove providers that are never rewritten
 - **Per-provider overrides**: a dropdown per provider (follow global / off / any profile)
 - **Custom profiles**: create / edit / delete (UA plus any / anthropic / openai header groups, one `key: value` per line); dual-form (`forms`) profiles stay read-only on the page to protect their shape — edit those in the config file
+- **Page font size**: slider or numeric input (12–24px) to pin a size, reset returns to the window-adaptive default; kept in the browser's localStorage, not the config file
 
 **curl**:
 
