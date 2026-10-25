@@ -47,12 +47,12 @@ magpie plugin add ./magpie-ua-switcher
 
 ## Built-in profiles
 
-The OS segment of codex/pi UAs is generated from the machine the plugin runs on, matching what the real clients do. Versions live in one `VERSIONS` table at the top of `index.mjs`; any profile can also be overridden per machine through the config's `profiles` field.
+The OS segment of codex/pi UAs is generated from the machine the plugin runs on, matching what the real clients do. Versions resolve in three layers: **built-in defaults < values fetched from npm < a hand pin in the config's `versions` field**. The npm layer refreshes itself in the background (on plugin load, then at most every `updateEveryHours`) for the clients whose npm package *is* their version — codex (`@openai/codex`) and claude-code (`@anthropic-ai/claude-code`) — trying npmjs.org first with npmmirror.com as fallback (plus your `registry`, if set). On change the UAs in `providers.json` are rewritten immediately. aiSdk, pi and zcode are never auto-fetched: aiSdk is a dependency ZCode bundles internally (npm's latest would assemble a UA the real client never sent), and pi/zcode ship no package to read — bump the built-in or pin one: `"versions": {"zcode": "3.99.0"}`. The web page has a "check for updates" button; `curl -X POST http://127.0.0.1:3426/versions/refresh` forces a fetch and `curl http://127.0.0.1:3426/versions` shows each version and where it came from (builtin / fetched / pinned). A whole profile can also be overridden per machine through the config's `profiles` field.
 
 | id | User-Agent | companion headers |
 |---|---|---|
-| `codex` | `codex_cli_rs/0.153.4 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`; on the responses wire also `OpenAI-Beta: responses=experimental` |
-| `claude-code` | `claude-cli/2.1.280 (external, cli)` | `X-App: cli`; on anthropic also `anthropic-version`, `anthropic-beta: claude-code-20250219,…`, full `X-Stainless-*` set |
+| `codex` | `codex_cli_rs/0.164.0 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`; on the responses wire also `OpenAI-Beta: responses=experimental` |
+| `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`; on anthropic also `anthropic-version`, `anthropic-beta: claude-code-20250219,…`, full `X-Stainless-*` set |
 | `pi` | anthropic endpoints: `claude-cli/2.1.75`; responses endpoints: `pi (win32 10.0.19045; x64)` | exactly what the real pi client sends, picked per protocol |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`, `X-ZCode-*`, `X-Device-Mid` (read from the local device id when present) |
 | `off` | no rewrite | magpie's default behavior |
@@ -67,6 +67,10 @@ The OS segment of codex/pi UAs is generated from the machine the plugin runs on,
   "port": 3426,
   "log": "change",
   "selfcheck": false,
+  "autoVersions": true,
+  "updateEveryHours": 24,
+  "registry": null,
+  "versions": {},
   "profiles": {}
 }
 ```
@@ -77,6 +81,8 @@ The OS segment of codex/pi UAs is generated from the machine the plugin runs on,
 - `port` — web switcher port (reload the plugin after changing).
 - `log` — `change` (default, one line when the effective profile changes) | `always` | `off`.
 - `selfcheck` — self-test mode, see below.
+- `autoVersions` / `updateEveryHours` / `registry` — the npm auto-update: on/off, fetch interval in hours, an extra registry tried first.
+- `versions` — hand pins, e.g. `{"codex": "0.170.0"}`; always beats a fetched value.
 - `profiles` — custom profiles, merged over the built-ins. Single form: `{ "label", "ua", "headers": { "any": {}, "anthropic": {}, "openai": {} } }`; per-protocol forms: `forms: { anthropic, openai, default }`.
 - `applied` — internal bookkeeping of keys the plugin wrote into `providers.json`; don't edit by hand.
 

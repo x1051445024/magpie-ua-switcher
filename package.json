@@ -1,6 +1,6 @@
 {
   "name": "magpie-ua-switcher",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Switch the User-Agent magpie sends upstream (Codex CLI / Claude Code / pi / ZCode / custom) from a tiny local web page",
   "keywords": [
     "magpie",

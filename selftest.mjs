@@ -8,7 +8,7 @@ const cfgPath = path.join(os.tmpdir(), `ua-switcher-selftest-${process.pid}.json
 const provPath = path.join(os.tmpdir(), `ua-switcher-prov-${process.pid}.json`)
 process.env.UA_SWITCHER_CONFIG = cfgPath
 process.env.UA_SWITCHER_PROVIDERS = provPath
-fs.writeFileSync(cfgPath, JSON.stringify({ profile: "off", port: 0 }))
+fs.writeFileSync(cfgPath, JSON.stringify({ profile: "off", port: 0, autoVersions: false }))
 fs.writeFileSync(
   provPath,
   JSON.stringify({
@@ -57,7 +57,7 @@ eq("set via http", (await (await fetch(base + "/set/codex", { method: "POST" }))
 
 // codex × protocols
 let h = await apply("any", "@ai-sdk/anthropic")
-eq("codex ua shape", /^codex_cli_rs\/0\.153\.4 \(.+; .+\) /.test(h["User-Agent"] ?? ""), true)
+eq("codex ua shape", /^codex_cli_rs\/0\.164\.0 \(.+; .+\) /.test(h["User-Agent"] ?? ""), true)
 eq("codex originator", h["originator"], "codex_cli_rs")
 eq("codex anthropic has no OpenAI-Beta", "OpenAI-Beta" in h, false)
 h = await apply("any", "@ai-sdk/openai-responses")
@@ -66,7 +66,7 @@ eq("codex openai OpenAI-Beta", h["OpenAI-Beta"], "responses=experimental")
 // claude-code
 await fetch(base + "/set/claude-code", { method: "POST" })
 h = await apply("any", "@ai-sdk/anthropic")
-eq("claude-code ua", h["User-Agent"], "claude-cli/2.1.280 (external, cli)")
+eq("claude-code ua", h["User-Agent"], "claude-cli/2.1.310 (external, cli)")
 eq("claude-code x-app", h["X-App"], "cli")
 eq("claude-code beta prefix", String(h["anthropic-beta"]).startsWith("claude-code-20250219"), true)
 eq("claude-code stainless", h["X-Stainless-Lang"], "js")
@@ -104,6 +104,25 @@ h = await apply("any", "@ai-sdk/anthropic")
 eq("custom ua", h["User-Agent"], "MyAgent/1.0")
 eq("custom header", h["X-Tag"], "hi")
 
+// version pinning beats built-ins; /versions exposes what is in use
+await fetch(base + "/set/codex", { method: "POST" })
+const cfgV = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+cfgV.versions = { codex: "9.9.9" }
+fs.writeFileSync(cfgPath, JSON.stringify(cfgV))
+h = await apply("any", "@ai-sdk/anthropic")
+eq("pinned codex version wins", String(h["User-Agent"]).startsWith("codex_cli_rs/9.9.9 ("), true)
+let vs = await (await fetch(base + "/versions")).json()
+eq("versions endpoint inUse", vs.values.codex.inUse, "9.9.9")
+eq("versions endpoint source", vs.values.codex.source, "pinned")
+eq("versions endpoint npm mapping", vs.values.codex.npm, "@openai/codex")
+eq("versions endpoint zcode has no npm", vs.values.zcode.npm, null)
+delete cfgV.versions
+fs.writeFileSync(cfgPath, JSON.stringify(cfgV))
+h = await apply("any", "@ai-sdk/anthropic")
+eq("unpinned falls back to builtin", String(h["User-Agent"]).startsWith("codex_cli_rs/0.164.0 ("), true)
+vs = await (await fetch(base + "/versions")).json()
+eq("fallback source is builtin", vs.values.codex.source, "builtin")
+
 // rejects unknown profiles; page renders
 eq("unknown profile rejected", (await fetch(base + "/set/nope", { method: "POST" })).status, 400)
 eq("page renders", (await (await fetch(base + "/")).text()).includes("magpie UA"), true)
@@ -112,7 +131,7 @@ eq("logs flow through client.app.log", logs.length > 0, true)
 // native providers (providers.json headers) — codex
 await fetch(base + "/set/codex", { method: "POST" })
 let ps = Object.fromEntries(prov().map((p) => [p.id, p]))
-eq("native responses UA", String(ps["p-responses"].headers["User-Agent"]).startsWith("codex_cli_rs/0.153.4 ("), true)
+eq("native responses UA", String(ps["p-responses"].headers["User-Agent"]).startsWith("codex_cli_rs/0.164.0 ("), true)
 eq("native responses originator+beta", [ps["p-responses"].headers["originator"], ps["p-responses"].headers["OpenAI-Beta"]], ["codex_cli_rs", "responses=experimental"])
 eq("native keeps user's own header", ps["p-responses"].headers["X-Keep"], "mine")
 eq("native anthropic no OpenAI-Beta", "OpenAI-Beta" in (ps["p-anthropic"].headers ?? {}), false)

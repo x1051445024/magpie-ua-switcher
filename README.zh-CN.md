@@ -13,6 +13,8 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 
 协议自适应：按 provider/模型的 SDK 包或 providers.json 的 wire 字段识别 anthropic / openai(responses) 协议，anthropic 专属头（anthropic-beta、X-Stainless-* 等）只发给 anthropic 协议请求，OpenAI-Beta 等只发给 responses 请求。
 
+版本自动更新：codex（@openai/codex）与 claude-code（@anthropic-ai/claude-code）两个版本号在插件加载时后台查 npm（npmjs 优先、npmmirror 兜底，可配 `registry` 再加一个），有变化就写缓存并立即重写 providers.json 里的 UA；缓存 24 小时内不重复查（`updateEveryHours` 调）。aiSdk、pi、zcode 不自动更新——aiSdk 是 ZCode 内部捆绑的依赖，npm 最新值反而会拼出真实客户端不存在的组合；pi 和 zcode 没有公开 npm 包。手动钉版本永远优先：`"versions": {"codex": "0.170.0"}`。网页上有「检查更新」按钮，也可以 `curl -X POST http://127.0.0.1:3426/versions/refresh`，`curl http://127.0.0.1:3426/versions` 查看当前各版本来源（builtin / fetched / pinned）。
+
 ## 安装
 
 ```bash
@@ -60,6 +62,10 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
   "port": 3426,
   "log": "change",
   "selfcheck": false,
+  "autoVersions": true,
+  "updateEveryHours": 24,
+  "registry": null,
+  "versions": {},
   "profiles": {}
 }
 ```
@@ -70,6 +76,8 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `port`：网页开关监听端口（改后需重载插件）。
 - `log`：`change` | `always` | `off`。
 - `selfcheck`：自检模式，见下。
+- `autoVersions` / `updateEveryHours` / `registry`：npm 版本自动更新的开关、查询间隔（小时）、额外的首选 registry。
+- `versions`：手动钉版本，如 `{"codex": "0.170.0"}`，优先级最高。
 - `profiles`：自定义档案，合并覆盖同名内置。单形态 `{ "label", "ua", "headers": {"any","anthropic","openai"} }`；双形态 `forms: { anthropic, openai, default }`。
 - `applied`：插件内部记账，勿手工编辑。
 
