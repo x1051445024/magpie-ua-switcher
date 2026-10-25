@@ -487,6 +487,114 @@ async function chatHeaders(msg, out) {
 let server = null // Bun server, or "external" while another healthy instance holds the port
 let lastBindTry = 0
 
+// ---- /config validation ----------------------------------------------------------
+
+const ID_RE = /^[A-Za-z0-9._-]{1,40}$/
+const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}$/ // RFC 7230 token, pragmatic
+
+function cleanExcludes(v) {
+  if (!Array.isArray(v)) throw new Error("excludeProviders 必须是数组")
+  const out = []
+  for (const x of v) {
+    if (typeof x !== "string" || !ID_RE.test(x)) throw new Error(`无效的 provider id：${JSON.stringify(x)}`)
+    if (!out.includes(x)) out.push(x)
+  }
+  return out
+}
+
+function cleanOverrides(v, profiles) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("providerOverrides 必须是对象")
+  const out = {}
+  for (const [id, prof] of Object.entries(v)) {
+    if (!ID_RE.test(id)) throw new Error(`无效的 provider id：${id}`)
+    if (prof !== "off" && !profiles[prof]) throw new Error(`providerOverrides.${id} 引用了不存在的档案：${prof}`)
+    out[id] = prof
+  }
+  return out
+}
+
+function cleanPins(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("versions 必须是对象")
+  const out = {}
+  for (const [k, val] of Object.entries(v)) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_VERSIONS, k)) throw new Error(`未知的版本键：${k}`)
+    if (val === "" || val == null) continue // an empty value clears the pin
+    if (typeof val !== "string" || !VERSION_RE.test(val)) throw new Error(`versions.${k} 不是合法版本号：${JSON.stringify(val)}`)
+    out[k] = val
+  }
+  return out
+}
+
+function cleanHeadersGroup(v, where) {
+  const out = {}
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`${where} 必须是对象`)
+  for (const [k, val] of Object.entries(v)) {
+    if (!HEADER_KEY_RE.test(k)) throw new Error(`${where} 含非法头字段名：${JSON.stringify(k)}`)
+    if (typeof val !== "string" || !val.length || val.length > 512) throw new Error(`${where}.${k} 的值必须是 1–512 字符`)
+    out[k] = val
+  }
+  return out
+}
+
+function cleanProfileForm(f, where) {
+  if (!f || typeof f !== "object") throw new Error(`${where} 必须是对象`)
+  const out = {}
+  if (f.ua != null) {
+    if (typeof f.ua !== "string" || !f.ua.length || f.ua.length > 512) throw new Error(`${where}.ua 必须是 1–512 字符`)
+    out.ua = f.ua
+  }
+  if (f.headers) {
+    const g = {}
+    for (const proto of ["any", "anthropic", "openai"]) if (f.headers[proto]) g[proto] = cleanHeadersGroup(f.headers[proto], `${where}.headers.${proto}`)
+    if (Object.keys(g).length) out.headers = g
+  }
+  return out
+}
+
+function cleanProfiles(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("profiles 必须是对象")
+  const out = {}
+  for (const [id, p] of Object.entries(v)) {
+    if (!ID_RE.test(id)) throw new Error(`无效的档案 id：${JSON.stringify(id)}`)
+    if (!p || typeof p !== "object") throw new Error(`档案 ${id} 必须是对象`)
+    const one = {}
+    if (typeof p.label === "string" && p.label.trim()) one.label = p.label.trim().slice(0, 60)
+    if (p.forms) {
+      if (typeof p.forms !== "object" || Array.isArray(p.forms)) throw new Error(`档案 ${id} 的 forms 必须是对象`)
+      const forms = {}
+      for (const [proto, f] of Object.entries(p.forms)) {
+        if (!["anthropic", "openai", "default"].includes(proto)) throw new Error(`档案 ${id}.forms 含未知协议：${proto}`)
+        forms[proto] = cleanProfileForm(f, `档案 ${id}.forms.${proto}`)
+      }
+      one.forms = forms
+    } else {
+      if (typeof p.ua !== "string" || !p.ua.length || p.ua.length > 512) throw new Error(`档案 ${id} 的 ua 必须是 1–512 字符`)
+      one.ua = p.ua
+      if (p.headers) {
+        const g = {}
+        for (const proto of ["any", "anthropic", "openai"]) if (p.headers[proto]) g[proto] = cleanHeadersGroup(p.headers[proto], `档案 ${id}.headers.${proto}`)
+        if (Object.keys(g).length) one.headers = g
+      }
+    }
+    out[id] = one
+  }
+  return out
+}
+
+// providersForUi lists what the provider sections of the page offer: every
+// native entry of providers.json plus the plugin-declared zcode provider.
+function providersForUi() {
+  const out = [{ id: "zcode", name: "ZCode（插件 provider）", off: false, wire: "anthropic" }]
+  try {
+    const j = JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf8"))
+    for (const p of j.providers ?? []) {
+      if (p && typeof p === "object" && typeof p.id === "string" && !out.some((q) => q.id === p.id))
+        out.push({ id: p.id, name: String(p.name ?? p.id), off: p.off === true, wire: wireOf(p) })
+    }
+  } catch {}
+  return out
+}
+
 function state() {
   const cfg = loadCfg()
   const profiles = effectiveProfiles(cfg)
@@ -498,6 +606,20 @@ function state() {
     port: server ? server.port : cfg.port,
     configPath: CONFIG_PATH,
     versions: versionState(cfg),
+    pins: cfg.versions ?? {},
+    providers: providersForUi(),
+    customProfiles: Object.fromEntries(
+      Object.entries(cfg.profiles).map(([id, p]) => [
+        id,
+        {
+          label: p.label || id,
+          ua: typeof p.ua === "string" ? p.ua : "",
+          headers: p.headers && typeof p.headers === "object" && !Array.isArray(p.headers) ? p.headers : {},
+          forms: p.forms ? true : undefined,
+          raw: p, // handed back untouched when the page saves other profiles
+        },
+      ]),
+    ),
     profiles: [
       { id: "off", label: "关闭 · magpie 默认" },
       ...Object.entries(profiles).map(([id, p]) => ({ id, label: p.label || id })),
@@ -505,61 +627,204 @@ function state() {
   }
 }
 
-const esc = (s) =>
-  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
-
+// The page is a static shell; the script renders everything from /state so
+// the server never builds HTML with user data in it.
 function page() {
-  const s = state()
-  const buttons = s.profiles
-    .map(
-      (p) =>
-        `<button class="p${p.id === s.profile ? " on" : ""}" data-id="${esc(p.id)}"><span>${esc(p.label)}</span><code>${esc(p.id)}</code></button>`,
-    )
-    .join("")
-  const overrides = Object.entries(s.providerOverrides)
-    .map(([k, v]) => `<code>${esc(k)} → ${esc(v)}</code>`)
-    .join(" ")
-  const v = s.versions?.values ?? {}
-  const vrow = (k) => `<code>${esc(k)} ${esc(v[k]?.inUse ?? "?")}${v[k]?.source === "pinned" ? " ⚑" : ""}</code>`
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>magpie UA 切换器</title><style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#111418;color:#e8eaed;font:14px/1.6 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;display:flex;justify-content:center;padding:32px 16px}
-main{width:100%;max-width:560px}
-h1{font-size:18px;margin:0 0 4px}
-.sub{color:#9aa0a6;font-size:12px;margin-bottom:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+body{margin:0;min-height:100vh;background:#111418;color:#e8eaed;font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;font-size:clamp(15px,.7vw + 12.5px,18px);line-height:1.6;display:flex;justify-content:center;padding:28px 16px 48px}
+main{width:100%;max-width:720px}
+h1{font-size:clamp(19px,1vw + 16px,24px);margin:0}
+h2{font-size:1.02em;margin:0 0 10px;color:#c7cbd1}
+.sub{color:#9aa0a6;font-size:.8em;margin:2px 0 18px}
+.cur{color:#7ab0ff;font-weight:600}
+.card{border:1px solid #2b3038;border-radius:12px;padding:14px 16px;margin-top:16px;background:#151920}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+button{font:inherit}
 button.p{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px 14px;border-radius:10px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;cursor:pointer;text-align:left;transition:border-color .15s,background .15s}
 button.p:hover{border-color:#4a5261}
 button.p.on{border-color:#7ab0ff;background:#1d2a3d}
-button.p.on::after{content:"当前生效";font-size:11px;color:#7ab0ff}
-button.p span{font-size:14px}
-button.p code{font-size:11px;color:#9aa0a6}
-.box{margin-top:20px;padding:12px 14px;border:1px solid #2b3038;border-radius:10px;font-size:12px;color:#9aa0a6}
+button.p.on::after{content:"当前生效";font-size:.72em;color:#7ab0ff}
+button.p span{font-size:.95em}
+button.p code{font-size:.72em;color:#9aa0a6}
+.in,select,textarea,input[type=text]{width:100%;padding:7px 10px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;font:inherit;font-size:.9em}
+textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:.82em}
+textarea:focus,input:focus,select:focus{outline:none;border-color:#4a5261}
+label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
+.vrow{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:10px;align-items:center;margin:8px 0}
+.vname{font-size:.85em}
+.tag{display:inline-block;font-size:.68em;border:1px solid #31415a;border-radius:999px;padding:0 8px;margin-left:6px;color:#9aa0a6;vertical-align:middle}
+.tag.pin{color:#ffd479;border-color:#6b5a2b}
+.tag.get{color:#7ee2b8;border-color:#2b5a47}
+.btn{padding:6px 14px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;cursor:pointer;font-size:.85em}
+.btn:hover{border-color:#4a5261}
+.btn.pri{background:#1d2a3d;border-color:#37507a;color:#cfe2ff}
+.btn.pri:hover{border-color:#7ab0ff}
+.btn.mini{padding:2px 9px;font-size:.75em}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:#1d2a3d;border:1px solid #31415a;border-radius:999px;padding:3px 6px 3px 12px;font-size:.82em}
+.chip button{background:none;border:none;color:#9aa0a6;cursor:pointer;font-size:.9em;padding:2px 6px;border-radius:999px}
+.chip button:hover{color:#ff8a80;background:#2a1d22}
+.exrow{display:grid;grid-template-columns:minmax(110px,1fr) minmax(140px,1.4fr);gap:10px;align-items:center;margin:6px 0;font-size:.85em}
+.exrow .off{color:#666}
+.exrow code{color:#9aa0a6;font-size:.85em}
+.plist{margin:4px 0 10px}
+.prow{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #2b3038;border-radius:8px;margin:6px 0;font-size:.88em}
+.prow code{color:#9aa0a6;font-size:.85em;margin-right:auto}
+.err{color:#ff8a80;font-size:.82em;min-height:1.2em;margin-top:8px}
+#status{position:fixed;right:16px;bottom:14px;background:#1d2a3d;border:1px solid #37507a;color:#cfe2ff;border-radius:10px;padding:8px 14px;font-size:.82em;opacity:0;transition:opacity .25s;pointer-events:none;max-width:70vw}
+#status.show{opacity:1}
+#status.err{background:#2a1d22;border-color:#6b2b35;color:#ff8a80}
+.box{margin-top:16px;padding:12px 14px;border:1px solid #2b3038;border-radius:10px;font-size:.78em;color:#9aa0a6}
 .box b{color:#c7cbd1;font-weight:600}
-.box code{background:#22272f;padding:1px 6px;border-radius:4px;font-size:11px;color:#c7cbd1}
+.box code{background:#22272f;padding:1px 6px;border-radius:4px;color:#c7cbd1}
 .row{margin-top:8px}
 </style></head><body><main>
 <h1>magpie UA 切换器</h1>
-<div class="sub">切换 magpie 发往上游的 User-Agent，即时生效，无需重启</div>
-<div class="grid">${buttons}</div>
-<div class="box">
-  <div class="row"><b>排除的 provider</b>（不改写）：${s.excludeProviders.map(esc).join("、") || "无"}</div>
-  ${overrides ? `<div class="row"><b>按 provider 覆盖</b>：${overrides}</div>` : ""}
-  <div class="row"><b>curl 切换</b>：<code>curl http://127.0.0.1:${s.port}/set/claude-code</code>（或 codex / pi / zcode / off）</div>
-  <div class="row"><b>客户端版本</b>：${vrow("codex")} ${vrow("claude-code")} ${vrow("pi")} ${vrow("zcode")}${s.versions?.autoVersions ? "" : "（自动更新已关）"} <button id="rv" style="padding:1px 8px;border-radius:6px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;cursor:pointer;font-size:11px">检查更新</button></div>
-  <div class="row"><b>配置文件</b>：<code>${esc(s.configPath)}</code>（自定义档案、版本钉死、排除列表、端口，热生效）</div>
+<div class="sub">切换 magpie 发往上游的 User-Agent，所有改动即时生效，无需重启</div>
+
+<div class="card">
+<h2>档案 · 当前 <span class="cur" id="cur"></span></h2>
+<div class="grid" id="grid"></div>
 </div>
+
+<div class="card">
+<h2>客户端版本 <span id="vinfo" style="font-weight:400;font-size:.78em;color:#9aa0a6"></span></h2>
+<div id="vrows"></div>
+<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
+<button class="btn pri" id="vsave">保存版本钉死</button>
+<button class="btn" id="vrefresh">检查更新</button>
+<span style="font-size:.75em;color:#9aa0a6">留空 = 跟随自动更新；填入版本号 = 钉死该版本</span>
+</div>
+</div>
+
+<div class="card">
+<h2>Provider 设置</h2>
+<label>排除的 provider（不改写）</label>
+<div class="chips" id="exchips"></div>
+<div style="display:flex;gap:8px"><select id="exsel"></select><button class="btn" id="exadd">添加排除</button></div>
+<label>按 provider 覆盖（优先于全局档案）</label>
+<div id="ovrows"></div>
+<button class="btn pri" id="psave" style="margin-top:10px">保存 Provider 设置</button>
+</div>
+
+<div class="card">
+<h2>自定义档案</h2>
+<div class="plist" id="plist"></div>
+<div id="pform" hidden>
+<label>档案 id（英文、数字、.-_）</label><input type="text" id="pf-id" maxlength="40">
+<label>显示名</label><input type="text" id="pf-label" maxlength="60">
+<label>User-Agent</label><input type="text" id="pf-ua" maxlength="512">
+<label>通用头（所有请求，每行「键: 值」）</label><textarea id="pf-any"></textarea>
+<label>anthropic 协议头（每行「键: 值」）</label><textarea id="pf-anthropic"></textarea>
+<label>openai / responses 协议头（每行「键: 值」）</label><textarea id="pf-openai"></textarea>
+<div style="display:flex;gap:10px;margin-top:10px">
+<button class="btn pri" id="pfsave">保存档案</button>
+<button class="btn" id="pfcancel">取消</button>
+</div>
+</div>
+<button class="btn" id="pfnew">＋ 新增档案</button>
+</div>
+
+<div class="box">
+<div class="row"><b>curl 切换</b>：<code>curl http://127.0.0.1:<span id="port"></span>/set/claude-code</code>（或 codex / pi / zcode / off）</div>
+<div class="row"><b>配置文件</b>：<code id="cfgpath"></code>（本页所有改动同样写入此文件，手动编辑亦热生效）</div>
+</div>
+
+<div id="status"></div>
 <script>
-document.querySelectorAll("button.p").forEach(b=>b.addEventListener("click",()=>{
-  fetch("/set/"+encodeURIComponent(b.dataset.id),{method:"POST"}).then(()=>location.reload())
-}))
-document.getElementById("rv")?.addEventListener("click",()=>{
-  const b=document.getElementById("rv");b.textContent="更新中…";b.disabled=true
-  fetch("/versions/refresh",{method:"POST"}).then(()=>location.reload()).catch(()=>{b.textContent="重试";b.disabled=false})
-})
+var S=null,excl=[]
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function h2t(h){var o=[];for(var k in (h||{}))o.push(k+": "+(h||{})[k]);return o.join("\\n")}
+function t2h(t){var o={};String(t||"").split(/\\r?\\n/).forEach(function(line){if(!line.trim())return;var m=line.match(/^\\s*([A-Za-z0-9!#$%&'*+.^_|~-]+)\\s*:\\s*(.*)$/);if(!m)throw new Error("无法解析的头行："+line);o[m[1]]=m[2].trim()});return o}
+function flash(msg,isErr){var s=document.getElementById("status");s.textContent=msg;s.className="show"+(isErr?" err":"");clearTimeout(flash.t);flash.t=setTimeout(function(){s.className=""},isErr?5000:2500)}
+function post(body){return fetch("/config",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(async function(r){var j=await r.json().catch(function(){return {}});if(!r.ok||j.ok===false)throw new Error(j.error||("HTTP "+r.status));return j})}
+function when(ms){return ms?new Date(ms).toLocaleString("zh-CN",{hour12:false}):"从未"}
+
+function render(){
+document.getElementById("cur").textContent=(S.profiles.find(function(p){return p.id===S.profile})||{}).label||S.profile
+document.getElementById("port").textContent=S.port
+document.getElementById("cfgpath").textContent=S.configPath
+document.getElementById("grid").innerHTML=S.profiles.map(function(p){return '<button class="p'+(p.id===S.profile?" on":"")+'" data-id="'+esc(p.id)+'"><span>'+esc(p.label)+'</span><code>'+esc(p.id)+'</code></button>'}).join("")
+var keys=Object.keys(S.versions.values)
+document.getElementById("vinfo").textContent=S.versions.autoVersions?("· 自动更新开 · 每 "+S.versions.updateEveryHours+" 小时 · 上次检查 "+when(S.versions.fetchedAt)):"· 自动更新已关"
+document.getElementById("vrows").innerHTML=keys.map(function(k){
+var v=S.versions.values[k]
+var tag=v.source==="pinned"?'<span class="tag pin">钉死</span>':v.source==="fetched"?'<span class="tag get">npm</span>':'<span class="tag">内置</span>'
+return '<div class="vrow"><div class="vname"><b>'+esc(k)+'</b>'+tag+(v.npm?'<div style="font-size:.75em;color:#666">'+esc(v.npm)+'</div>':"")+'</div><input type="text" data-vk="'+esc(k)+'" value="'+esc(S.pins[k]||"")+'" placeholder="当前 '+esc(v.inUse)+'"></div>'}).join("")
+excl=S.excludeProviders.slice()
+renderEx()
+var profs=S.profiles
+document.getElementById("ovrows").innerHTML=S.providers.map(function(p){
+var opts=['<option value="">跟随全局</option>'].concat(profs.map(function(q){return '<option value="'+esc(q.id)+'"'+((S.providerOverrides[p.id]||"")===q.id?" selected":"")+'>'+esc(q.label)+'</option>'})).join("")
+return '<div class="exrow"><div>'+esc(p.name)+' '+(p.off?'<span class="off">(已停用)</span>':"")+'<br><code>'+esc(p.id)+' · '+esc(p.wire)+'</code></div><select data-ov="'+esc(p.id)+'">'+opts+'</select></div>'}).join("")
+renderPlist()
+}
+function renderEx(){
+var known=S.providers.map(function(p){return p.id})
+document.getElementById("exchips").innerHTML=excl.length?excl.map(function(id){return '<span class="chip">'+esc(id)+'<button data-unex="'+esc(id)+'" title="移除">✕</button></span>'}).join(""):'<span style="font-size:.8em;color:#666">无</span>'
+document.getElementById("exsel").innerHTML=S.providers.filter(function(p){return excl.indexOf(p.id)<0}).map(function(p){return '<option value="'+esc(p.id)+'">'+esc(p.name)+' ('+esc(p.id)+')</option>'}).join("")||'<option value="">（全部已排除）</option>'
+}
+function renderPlist(){
+var ids=Object.keys(S.customProfiles)
+document.getElementById("plist").innerHTML=ids.length?ids.map(function(id){var p=S.customProfiles[id]
+return '<div class="prow">📋 '+esc(p.label)+'<code>'+esc(id)+(p.forms?" · 双形态（配置文件编辑）":"")+'</code>'+(p.forms?"":'<button class="btn mini" data-edit="'+esc(id)+'">编辑</button>')+'<button class="btn mini" data-del="'+esc(id)+'">删除</button></div>'}).join(""):'<div style="font-size:.8em;color:#666">暂无，点下方新增</div>'
+}
+function collectProfiles(extra){
+var out={}
+for(var id in S.customProfiles){
+  if(extra&&extra.del===id)continue
+  if(extra&&extra.id===id)continue
+  out[id]=S.customProfiles[id].raw}
+if(extra&&extra.id&&!extra.del)out[extra.id]=extra.prof
+return out
+}
+async function load(){S=await (await fetch("/state")).json());render()}
+
+document.getElementById("grid").addEventListener("click",function(e){var b=e.target.closest("button.p");if(!b)return
+fetch("/set/"+encodeURIComponent(b.dataset.id),{method:"POST"}).then(load).catch(function(){flash("切换失败",true)})})
+document.getElementById("vsave").onclick=function(){
+var vs={};document.querySelectorAll("[data-vk]").forEach(function(i){vs[i.dataset.vk]=i.value.trim()})
+post({versions:vs}).then(function(){flash("版本钉死已保存");load()}).catch(function(e){flash(e.message,true)})}
+document.getElementById("vrefresh").onclick=function(){var b=this;b.disabled=true;b.textContent="检查中…"
+fetch("/versions/refresh",{method:"POST"}).then(function(r){return r.json()}).then(function(j){b.disabled=false;b.textContent="检查更新"
+if(j.ok){flash(j.changed&&j.changed.length?("已更新："+j.changed.join("、")):"已是最新");load()}else flash(j.error||"检查失败",true)}).catch(function(){b.disabled=false;b.textContent="检查更新";flash("检查失败",true)})}
+document.getElementById("exadd").onclick=function(){var v=document.getElementById("exsel").value;if(v&&excl.indexOf(v)<0){excl.push(v);renderEx()}}
+document.getElementById("exchips").addEventListener("click",function(e){var b=e.target.closest("[data-unex]");if(!b)return;excl=excl.filter(function(x){return x!==b.dataset.unex});renderEx()})
+document.getElementById("psave").onclick=function(){
+var ov={};document.querySelectorAll("[data-ov]").forEach(function(s){if(s.value)ov[s.dataset.ov]=s.value})
+post({excludeProviders:excl,providerOverrides:ov}).then(function(){flash("Provider 设置已保存");load()}).catch(function(e){flash(e.message,true)})}
+document.getElementById("pfnew").onclick=function(){openForm()}
+document.getElementById("pfcancel").onclick=function(){document.getElementById("pform").hidden=true}
+function openForm(id){var f=document.getElementById("pform");f.hidden=false
+var p=id?S.customProfiles[id]:null
+document.getElementById("pf-id").value=id||"";document.getElementById("pf-id").disabled=!!id
+document.getElementById("pf-label").value=p?p.label:""
+document.getElementById("pf-ua").value=p?p.ua:""
+document.getElementById("pf-any").value=p?h2t(p.headers.any):""
+document.getElementById("pf-anthropic").value=p?h2t(p.headers.anthropic):""
+document.getElementById("pf-openai").value=p?h2t(p.headers.openai):""
+if(p&&p.forms){document.getElementById("pf-ua").value=p.ua||"";document.getElementById("pf-ua").placeholder="该档案为双形态，此处只显示 anthropic 形态的 UA；完整编辑请改配置文件"}
+f.scrollIntoView({behavior:"smooth"})}
+document.getElementById("pfsave").onclick=function(){
+var id=document.getElementById("pf-id").value.trim(),ua=document.getElementById("pf-ua").value
+try{var prof={label:document.getElementById("pf-label").value.trim()||id,ua:ua,headers:{}}
+var any=t2h(document.getElementById("pf-any").value),an=t2h(document.getElementById("pf-anthropic").value),op=t2h(document.getElementById("pf-openai").value)
+if(Object.keys(any).length)prof.headers.any=any
+if(Object.keys(an).length)prof.headers.anthropic=an
+if(Object.keys(op).length)prof.headers.openai=op
+if(!/^[A-Za-z0-9._-]{1,40}$/.test(id))throw new Error("档案 id 只能是英文、数字和 . _ -")
+if(!ua)throw new Error("User-Agent 不能为空")
+post({profiles:collectProfiles({id:id,prof:prof})}).then(function(){flash("档案已保存");document.getElementById("pform").hidden=true;load()}).catch(function(e){flash(e.message,true)})
+}catch(e){flash(e.message,true)}}
+document.getElementById("plist").addEventListener("click",function(e){
+var d=e.target.closest("[data-del]"),t=e.target.closest("[data-edit]")
+if(d){post({profiles:collectProfiles({id:d.dataset.del,del:true})}).then(function(){flash("档案已删除");load()}).catch(function(er){flash(er.message,true)})}
+else if(t)openForm(t.dataset.edit)})
+load()
 </script>
 </main></body></html>`
 }
@@ -581,6 +846,33 @@ async function handle(req) {
   if (url.pathname === "/versions/refresh" && req.method === "POST") {
     const r = await fetchLatestVersions(true)
     return json(r, r.ok ? 200 : 502)
+  }
+  if (url.pathname === "/config" && req.method === "POST") {
+    let body
+    try {
+      body = await req.json()
+    } catch {
+      return json({ ok: false, error: "请求体不是合法 JSON" }, 400)
+    }
+    const patch = {}
+    try {
+      const incomingProfiles = "profiles" in body ? cleanProfiles(body.profiles) : null
+      // overrides validate against the built-ins plus the incoming customs together
+      const profiles = incomingProfiles
+        ? { ...builtinProfiles(versionsOf(loadCfg())), ...incomingProfiles }
+        : effectiveProfiles(loadCfg())
+      if ("excludeProviders" in body) patch.excludeProviders = cleanExcludes(body.excludeProviders)
+      if ("providerOverrides" in body) patch.providerOverrides = cleanOverrides(body.providerOverrides, profiles)
+      if ("versions" in body) patch.versions = cleanPins(body.versions)
+      if (incomingProfiles) patch.profiles = incomingProfiles
+    } catch (e) {
+      return json({ ok: false, error: e?.message ?? String(e) }, 400)
+    }
+    const cfg = saveCfg(patch)
+    try {
+      providersApply(cfg)
+    } catch {}
+    return json({ ok: true, state: state() })
   }
   const m = url.pathname.match(/^\/set\/([A-Za-z0-9._-]+)$/)
   if (m && (req.method === "GET" || req.method === "POST")) {

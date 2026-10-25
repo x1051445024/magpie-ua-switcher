@@ -33,17 +33,27 @@ magpie plugin add ./magpie-ua-switcher
 
 ## Switch profiles
 
-1. **Web page**: open <http://127.0.0.1:3426> and click a button; the active profile is highlighted.
-2. **curl**:
-   ```bash
-   curl http://127.0.0.1:3426/set/codex        # Codex CLI
-   curl http://127.0.0.1:3426/set/claude-code  # Claude Code
-   curl http://127.0.0.1:3426/set/pi           # pi (dual identity, auto by protocol)
-   curl http://127.0.0.1:3426/set/zcode        # ZCode client
-   curl http://127.0.0.1:3426/set/off          # off — magpie's default UA
-   curl http://127.0.0.1:3426/state            # current state
-   ```
-3. **Config file**: edit `profile` in `~/.config/magpie/ua-switcher.json`; the next request through the gateway picks it up.
+**Web page** — <http://127.0.0.1:3426> switches profiles by clicking a card, and edits everything else inline (saved hot, into the same config file):
+
+- **Version pins**: one input per client version — leave empty to follow the auto-update, type a version to pin it
+- **Exclusions**: add/remove providers that are never rewritten
+- **Per-provider overrides**: a dropdown per provider (follow global / off / any profile)
+- **Custom profiles**: create / edit / delete (UA plus any / anthropic / openai header groups, one `key: value` per line); dual-form (`forms`) profiles stay read-only on the page to protect their shape — edit those in the config file
+
+**curl**:
+
+```bash
+curl http://127.0.0.1:3426/set/codex        # Codex CLI
+curl http://127.0.0.1:3426/set/claude-code  # Claude Code
+curl http://127.0.0.1:3426/set/pi           # pi (dual identity, auto by protocol)
+curl http://127.0.0.1:3426/set/zcode        # ZCode client
+curl http://127.0.0.1:3426/set/off          # off — magpie's default UA
+curl http://127.0.0.1:3426/state            # current state
+curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
+  -d '{"excludeProviders":["zcode"],"versions":{"codex":"0.170.0"}}'  # scripted edits
+```
+
+**Config file**: edit `~/.config/magpie/ua-switcher.json`; the next request through the gateway picks it up.
 
 ## Built-in profiles
 
@@ -107,7 +117,7 @@ cat /path/to/magpie-ua-switcher/ua-echo-last.json
 # 5. set "selfcheck" back to false and reload
 ```
 
-Unit tests: `magpie-bun.exe selftest.mjs` (43 assertions: every profile × protocol, exclusions, overrides, providers.json write and rollback).
+Unit tests: `magpie-bun.exe selftest.mjs` (69 assertions: every profile × protocol, exclusions, overrides, version pins, the /config endpoint's validation, providers.json write and rollback).
 
 ## Known limits
 

@@ -147,5 +147,44 @@ eq("off keeps user's header", ps["p-responses"].headers["X-Keep"], "mine")
 eq("off drops empty headers field", "headers" in ps["p-anthropic"], false)
 eq("applied map cleared", Object.keys(JSON.parse(fs.readFileSync(cfgPath, "utf8")).applied ?? {}), [])
 
+// /config endpoint: pins, exclusions, overrides, custom profiles
+async function postCfg(body) {
+  const res = await fetch(base + "/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+  return { status: res.status, j: await res.json().catch(() => ({})) }
+}
+eq("state lists providers", (await (await fetch(base + "/state")).json()).providers.map((p) => p.id), ["zcode", "p-responses", "p-anthropic"])
+let rc = await postCfg({ versions: { codex: "8.8.8" } })
+eq("config saves pins", rc.j.ok, true)
+await fetch(base + "/set/codex", { method: "POST" })
+h = await apply("any", "@ai-sdk/anthropic")
+eq("config pin wins", String(h["User-Agent"]).startsWith("codex_cli_rs/8.8.8 ("), true)
+rc = await postCfg({ versions: { codex: "" } })
+eq("config clears pins", rc.j.state.versions.values.codex.source, "builtin")
+
+eq("bad id rejected", (await postCfg({ profiles: { "bad id!": { ua: "x/1" } } })).status, 400)
+eq("bad pin rejected", (await postCfg({ versions: { codex: "not-a-version!" } })).status, 400)
+eq("unknown version key rejected", (await postCfg({ versions: { nope: "1.2.3" } })).status, 400)
+eq("bad header key rejected", (await postCfg({ profiles: { ok1: { ua: "x/1", headers: { any: { "bad key": "v" } } } } })).status, 400)
+eq("override unknown profile rejected", (await postCfg({ providerOverrides: { newapi: "nope" } })).status, 400)
+eq("bad excludes rejected", (await postCfg({ excludeProviders: ["x", 5] })).status, 400)
+
+rc = await postCfg({ profiles: { mycli: { label: "MyCli", ua: "MyCli/2.0", headers: { any: { "X-T": "1" } } } } })
+eq("config saves custom profile", rc.j.ok, true)
+await fetch(base + "/set/mycli", { method: "POST" })
+h = await apply("any", "@ai-sdk/anthropic")
+eq("custom via config ua", h["User-Agent"], "MyCli/2.0")
+eq("custom via config header", h["X-T"], "1")
+ps = Object.fromEntries(prov().map((p) => [p.id, p]))
+eq("native rewritten per custom", ps["p-responses"].headers["User-Agent"], "MyCli/2.0")
+
+rc = await postCfg({ excludeProviders: ["zcode", "other"], providerOverrides: {} })
+eq("config saves excludes", rc.j.state.excludeProviders, ["zcode", "other"])
+eq("excluded other untouched", await apply("other", "@ai-sdk/anthropic"), {})
+rc = await postCfg({ excludeProviders: ["zcode"] })
+eq("config restores excludes", rc.j.state.excludeProviders, ["zcode"])
+await fetch(base + "/set/off", { method: "POST" })
+rc = await postCfg({ profiles: {} })
+eq("config deletes custom profiles", rc.j.state.customProfiles, {})
+
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)

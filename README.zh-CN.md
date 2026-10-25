@@ -26,28 +26,38 @@ magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 
 **开发调试**：本目录就是 git 仓库。改代码 → push → `magpie plugin update github:x1051445024/magpie-ua-switcher`，magpie 的托管安装即更新。
 
-## 切换方式（三选一）
+## 切换方式（网页可编辑一切）
 
-1. **网页开关**：浏览器打开 <http://127.0.0.1:3426>，点按钮即切换，当前选中高亮。
-2. **curl 一行**：
-   ```bash
-   curl http://127.0.0.1:3426/set/codex        # 切到 Codex CLI
-   curl http://127.0.0.1:3426/set/claude-code  # 切到 Claude Code
-   curl http://127.0.0.1:3426/set/pi           # 切到 pi（按协议自动双形态）
-   curl http://127.0.0.1:3426/set/zcode        # 切到 ZCode 客户端
-   curl http://127.0.0.1:3426/set/off          # 关闭，恢复 magpie 默认
-   curl http://127.0.0.1:3426/state            # 查看当前状态
-   ```
-3. **直接改配置文件** `~/.config/magpie/ua-switcher.json` 的 `profile` 字段（下一次请求经过网关时生效）。
+**网页开关** <http://127.0.0.1:3426>：点卡片切换档案之外，还能直接编辑以下内容（保存即热生效，写入同一个配置文件）：
+
+- **版本钉死**：每个客户端版本一个输入框，留空跟随自动更新，填入版本号即钉死
+- **排除列表**：chip 式增删不改写的 provider
+- **按 provider 覆盖**：每个 provider 一个下拉（跟随全局 / 关闭 / 任一档案）
+- **自定义档案**：新增 / 编辑 / 删除（UA + 通用、anthropic、openai 三组头，每行「键: 值」）；双形态（`forms`）档案为防编辑降级，网页只读、仍走配置文件
+
+也可以 curl 或直接改配置文件（热生效）：
+
+```bash
+curl http://127.0.0.1:3426/set/codex        # 切到 Codex CLI
+curl http://127.0.0.1:3426/set/claude-code  # 切到 Claude Code
+curl http://127.0.0.1:3426/set/pi           # 切到 pi（按协议自动双形态）
+curl http://127.0.0.1:3426/set/zcode        # 切到 ZCode 客户端
+curl http://127.0.0.1:3426/set/off          # 关闭，恢复 magpie 默认
+curl http://127.0.0.1:3426/state            # 查看当前状态
+curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
+  -d '{"excludeProviders":["zcode"],"versions":{"codex":"0.170.0"}}'  # 编程式改配置
+```
+
+3. **直接改配置文件** `~/.config/magpie/ua-switcher.json`（下一次请求经过网关时生效）。
 
 ## 内置档案
 
-codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为一致）；版本号集中在 `index.mjs` 顶部的 `VERSIONS` 表，也可通过配置的 `profiles` 字段按机器覆盖。
+codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为一致）；版本号见上方「版本自动更新」，下表数字为示例（当前内置值）。
 
 | id | User-Agent | 伴随头 |
 |---|---|---|
-| `codex` | `codex_cli_rs/0.153.4 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`；responses 协议另带 `OpenAI-Beta: responses=experimental` |
-| `claude-code` | `claude-cli/2.1.280 (external, cli)` | `X-App: cli`；anthropic 协议另带 `anthropic-version`、`anthropic-beta: claude-code-20250219,…`、`X-Stainless-*` 全套 |
+| `codex` | `codex_cli_rs/0.164.0 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`；responses 协议另带 `OpenAI-Beta: responses=experimental` |
+| `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`；anthropic 协议另带 `anthropic-version`、`anthropic-beta: claude-code-20250219,…`、`X-Stainless-*` 全套 |
 | `pi` | anthropic 端点 `claude-cli/2.1.75`；responses 端点 `pi (win32 10.0.19045; x64)` | 与真实 pi 客户端行为一致，按请求的 SDK 包自动选形态 |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`、`X-ZCode-*`、`X-Device-Mid`（读本机真实设备 id）等 |
 | `off` | 不改写 | 恢复 magpie 默认行为 |
@@ -97,7 +107,7 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 # 5. 验证完把 "selfcheck" 改回 false 并重载
 ```
 
-单元测试：`magpie-bun.exe selftest.mjs`（43 项断言）。
+单元测试：`magpie-bun.exe selftest.mjs`（69 项断言）。
 
 ## 已知局限
 
