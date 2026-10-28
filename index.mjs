@@ -14,6 +14,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { randomBytes } from "node:crypto"
 
 const MAGPIE_DIR = path.join(os.homedir(), ".config", "magpie")
 const CONFIG_PATH = process.env.UA_SWITCHER_CONFIG || path.join(MAGPIE_DIR, "ua-switcher.json")
@@ -31,6 +32,7 @@ const DEFAULT_VERSIONS = {
   pi: "2.1.75", // the claude-cli identity pi presents on Anthropic-style APIs
   zcode: "3.16.3",
   aiSdk: "3.0.81", // the ai-sdk suffix ZCode's UA carries
+  bun: "1.4.4", // the Bun runtime version opencode's binary reports as its UA
 }
 
 // npm packages behind the auto-updated versions. aiSdk is deliberately not
@@ -46,6 +48,20 @@ const VERSIONS_PATH = CONFIG_PATH.replace(/\.json$/, "") + "-versions.json"
 // codex and pi build their UA's OS segment from the machine they run on, so
 // the switcher does the same instead of naming one fixed machine. codex is
 // Rust and names arches the Rust way (x64 → x86_64).
+// opencode sends no User-Agent of its own (the Bun runtime's default rides
+// along); its identity is the session header trio below. One id per plugin
+// process ≈ one long-lived session — generating per request would look wrong.
+function newOpencodeSessionId() {
+  try {
+    return `ses_${randomBytes(32).toString("hex")}`
+  } catch {
+    let s = ""
+    while (s.length < 64) s += Math.floor(Math.random() * 16).toString(16)
+    return `ses_${s}`
+  }
+}
+const OPENCODE_SESSION_ID = newOpencodeSessionId()
+
 const OS_TYPE = { Windows_NT: "Windows", Darwin: "macOS", Linux: "Linux" }[os.type()] ?? os.type()
 const RUST_ARCH = { x64: "x86_64", arm64: "aarch64", ia32: "x86" }[process.arch] ?? process.arch
 const CODEX_OS_SEG = `${OS_TYPE} ${os.release()}; ${RUST_ARCH}`
@@ -106,6 +122,23 @@ function builtinProfiles(V) {
         default: {
           ua: `pi (${os.platform()} ${os.release()}; ${os.arch()})`,
           headers: { any: { originator: "pi" } },
+        },
+      },
+    },
+    opencode: {
+      label: "opencode",
+      ua: `Bun/${V.bun}`,
+      headers: {
+        // The real client only injects X-Title/HTTP-Referer/X-Source on a
+        // handful of official providers; on custom baseURLs just the session
+        // headers ride along. We send all of them so relays can recognize us.
+        any: {
+          "HTTP-Referer": "https://opencode.ai/",
+          "X-Title": "opencode",
+          "X-Source": "opencode",
+          "x-opencode-session-id": OPENCODE_SESSION_ID,
+          "X-Session-Id": OPENCODE_SESSION_ID,
+          "x-session-affinity": OPENCODE_SESSION_ID,
         },
       },
     },
