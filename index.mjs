@@ -891,7 +891,7 @@ var keys=Object.keys(S.versions.values)
 document.getElementById("vinfo").textContent=S.versions.autoVersions?("· 自动更新开 · 每 "+S.versions.updateEveryHours+" 小时 · 上次检查 "+when(S.versions.fetchedAt)):"· 自动更新已关"
 document.getElementById("vrows").innerHTML=keys.map(function(k){
 var v=S.versions.values[k]
-var tag=v.source==="pinned"?'<span class="tag pin">钉死</span>':v.source==="fetched"?'<span class="tag get">npm</span>':'<span class="tag">内置</span>'
+var tag=v.source==="pinned"?'<span class="tag pin">钉死</span>':v.source==="detected"?'<span class="tag get">本机</span>':v.source==="fetched"?'<span class="tag get">npm</span>':'<span class="tag">内置</span>'
 return '<div class="vrow"><div class="vname"><b>'+esc(k)+'</b>'+tag+(v.npm?'<div style="font-size:.75em;color:#666">'+esc(v.npm)+'</div>':"")+'</div><input type="text" data-vk="'+esc(k)+'" value="'+esc(S.pins[k]||"")+'" placeholder="当前 '+esc(v.inUse)+'"></div>'}).join("")
 excl=S.excludeProviders.slice()
 renderEx()

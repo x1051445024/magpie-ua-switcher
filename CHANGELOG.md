@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.0 — 2026-10-28
+
+**opencode 与 Antigravity 档案 / opencode and Antigravity profiles**
+
+- 新增内置档案 `opencode`：UA 为 `Bun/<版本>`（真实客户端不设自定义 UA），伴随 opencode 身份头与会话三件套（`ses_<64hex>`，进程内固定）。
+  New built-in `opencode`: `Bun/<version>` UA (the real client sets none) plus opencode identity headers and the session trio.
+- 新增内置档案 `antigravity`：`antigravity/hub/<版本> (aidev_client; os_type=…; arch=…[; cl=…])`，平台按本机生成，已知构建号才带 CL。
+  New built-in `antigravity`: Hub-format UA with runtime platform; `cl=` only for known builds.
+- antigravity 版本优先读本机安装（app.asar 内 package.json），读不到回退内置值；两个新版本键 `bun`/`antigravity` 均可用 `versions` 手动钉死。版本来源新增「本机」标签。
+  Antigravity version is probed from the local install (app.asar), falling back to the built-in; both new keys are pinnable, and `/versions` gains a `detected` source.
+- selftest 断言 69 → 81 项（opencode/antigravity 档案、会话头、CL 规则、asar 读取器）。
+  Selftest assertions 69 → 81.
+
 ## 1.2.0 — 2026-10-25
 
 **版本自动更新与手动钉版本 / Auto-updating and pinnable client versions**

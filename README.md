@@ -48,6 +48,8 @@ curl http://127.0.0.1:3426/set/codex        # Codex CLI
 curl http://127.0.0.1:3426/set/claude-code  # Claude Code
 curl http://127.0.0.1:3426/set/pi           # pi (dual identity, auto by protocol)
 curl http://127.0.0.1:3426/set/zcode        # ZCode client
+curl http://127.0.0.1:3426/set/opencode     # opencode (Bun runtime UA + session headers)
+curl http://127.0.0.1:3426/set/antigravity  # Antigravity Hub
 curl http://127.0.0.1:3426/set/off          # off — magpie's default UA
 curl http://127.0.0.1:3426/state            # current state
 curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
@@ -58,7 +60,7 @@ curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
 
 ## Built-in profiles
 
-The OS segment of codex/pi UAs is generated from the machine the plugin runs on, matching what the real clients do. Versions resolve in three layers: **built-in defaults < values fetched from npm < a hand pin in the config's `versions` field**. The npm layer refreshes itself in the background (on plugin load, then at most every `updateEveryHours`) for the clients whose npm package *is* their version — codex (`@openai/codex`) and claude-code (`@anthropic-ai/claude-code`) — trying npmjs.org first with npmmirror.com as fallback (plus your `registry`, if set). On change the UAs in `providers.json` are rewritten immediately. aiSdk, pi and zcode are never auto-fetched: aiSdk is a dependency ZCode bundles internally (npm's latest would assemble a UA the real client never sent), and pi/zcode ship no package to read — bump the built-in or pin one: `"versions": {"zcode": "3.99.0"}`. The web page has a "check for updates" button; `curl -X POST http://127.0.0.1:3426/versions/refresh` forces a fetch and `curl http://127.0.0.1:3426/versions` shows each version and where it came from (builtin / fetched / pinned). A whole profile can also be overridden per machine through the config's `profiles` field.
+The OS segment of codex/pi/antigravity UAs is generated from the machine the plugin runs on, matching what the real clients do. Versions resolve in layers: **built-in defaults < the local Antigravity install (antigravity only) < values fetched from npm < a hand pin in the config's `versions` field**. `antigravity` is probed from the local install's `app.asar` root `package.json` (the same value the running language server gets as `--override_ide_version`); `bun` (opencode's runtime UA) and `antigravity` are never fetched from npm — the Bun version exists only inside opencode's compiled binary, and Antigravity ships no npm package. The npm layer refreshes itself in the background (on plugin load, then at most every `updateEveryHours`) for the clients whose npm package *is* their version — codex (`@openai/codex`) and claude-code (`@anthropic-ai/claude-code`) — trying npmjs.org first with npmmirror.com as fallback (plus your `registry`, if set). On change the UAs in `providers.json` are rewritten immediately. aiSdk, pi and zcode are never auto-fetched: aiSdk is a dependency ZCode bundles internally (npm's latest would assemble a UA the real client never sent), and pi/zcode ship no package to read — bump the built-in or pin one: `"versions": {"zcode": "3.99.0"}`. The web page has a "check for updates" button; `curl -X POST http://127.0.0.1:3426/versions/refresh` forces a fetch and `curl http://127.0.0.1:3426/versions` shows each version and where it came from (builtin / fetched / pinned). A whole profile can also be overridden per machine through the config's `profiles` field.
 
 | id | User-Agent | companion headers |
 |---|---|---|
@@ -66,6 +68,8 @@ The OS segment of codex/pi UAs is generated from the machine the plugin runs on,
 | `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`; on anthropic also `anthropic-version`, `anthropic-beta: claude-code-20250219,…`, full `X-Stainless-*` set |
 | `pi` | anthropic endpoints: `claude-cli/2.1.75`; responses endpoints: `pi (win32 10.0.19045; x64)` | exactly what the real pi client sends, picked per protocol |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`, `X-ZCode-*`, `X-Device-Mid` (read from the local device id when present) |
+| `opencode` | `Bun/1.4.4` (the real client sends no custom UA — the Bun runtime default rides along) | `HTTP-Referer: https://opencode.ai/`, `X-Title`/`X-Source: opencode`, session trio `x-opencode-session-id`/`X-Session-Id`/`x-session-affinity` (`ses_<64hex>`, fixed per plugin process) |
+| `antigravity` | `antigravity/hub/2.26.0 (aidev_client; os_type=windows; arch=amd64)` | none (the real Hub sends only its UA); `; cl=…` only for known builds |
 | `off` | no rewrite | magpie's default behavior |
 
 ## Configuration `~/.config/magpie/ua-switcher.json`
@@ -118,12 +122,14 @@ cat /path/to/magpie-ua-switcher/ua-echo-last.json
 # 5. set "selfcheck" back to false and reload
 ```
 
-Unit tests: `magpie-bun.exe selftest.mjs` (69 assertions: every profile × protocol, exclusions, overrides, version pins, the /config endpoint's validation, providers.json write and rollback).
+Unit tests: `magpie-bun.exe selftest.mjs` (81 assertions: every profile × protocol, exclusions, overrides, version pins, the asar version reader, the /config endpoint's validation, providers.json write and rollback).
 
 ## Known limits
 
 - The `chat.headers` hook can add and override headers but not remove them (the native-provider path has no such limit).
 - The zcode provider's Start Plan (`-Trial`/gift) models rebuild their headers entirely; the switcher cannot (and should not) change their identity.
+- `opencode`: the real client only sends `X-Title`/`HTTP-Referer`/`X-Source` on a few official providers; custom baseURLs get just the session headers. Sending all of them is deliberate, so relays can recognize the profile.
+- `antigravity`: `cl=` appears only for known build changelists (2.23.0 / 2.23.1 / 2.24.0); unknown versions omit it rather than claim another build's CL.
 - Only magpie → upstream headers change; what your agent sends to magpie is untouched.
 - The web page binds `127.0.0.1` only.
 - If you edit a provider in magpie's UI, what the UI saves wins until the plugin's next switch rewrites its keys.

@@ -13,6 +13,8 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 
 协议自适应：按 provider/模型的 SDK 包或 providers.json 的 wire 字段识别 anthropic / openai(responses) 协议，anthropic 专属头（anthropic-beta、X-Stainless-* 等）只发给 anthropic 协议请求，OpenAI-Beta 等只发给 responses 请求。
 
+版本解析优先级：**内置默认 < 本机 Antigravity 安装（仅 antigravity 键）< npm 抓取 < 手动钉死**。`antigravity` 从本机安装的 `app.asar` 根 `package.json` 读取（与运行中 language server 的 `--override_ide_version` 同值）；`bun`（opencode 的运行时 UA 版本）与 `antigravity` 不从 npm 抓取——Bun 版本只存在于 opencode 的编译产物里，Antigravity 也没有 npm 包。
+
 版本自动更新：codex（@openai/codex）与 claude-code（@anthropic-ai/claude-code）两个版本号在插件加载时后台查 npm（npmjs 优先、npmmirror 兜底，可配 `registry` 再加一个），有变化就写缓存并立即重写 providers.json 里的 UA；缓存 24 小时内不重复查（`updateEveryHours` 调）。aiSdk、pi、zcode 不自动更新——aiSdk 是 ZCode 内部捆绑的依赖，npm 最新值反而会拼出真实客户端不存在的组合；pi 和 zcode 没有公开 npm 包。手动钉版本永远优先：`"versions": {"codex": "0.170.0"}`。网页上有「检查更新」按钮，也可以 `curl -X POST http://127.0.0.1:3426/versions/refresh`，`curl http://127.0.0.1:3426/versions` 查看当前各版本来源（builtin / fetched / pinned）。
 
 ## 安装
@@ -43,6 +45,8 @@ curl http://127.0.0.1:3426/set/codex        # 切到 Codex CLI
 curl http://127.0.0.1:3426/set/claude-code  # 切到 Claude Code
 curl http://127.0.0.1:3426/set/pi           # 切到 pi（按协议自动双形态）
 curl http://127.0.0.1:3426/set/zcode        # 切到 ZCode 客户端
+curl http://127.0.0.1:3426/set/opencode     # 切到 opencode（Bun 运行时 UA + 会话头）
+curl http://127.0.0.1:3426/set/antigravity  # 切到 Antigravity Hub
 curl http://127.0.0.1:3426/set/off          # 关闭，恢复 magpie 默认
 curl http://127.0.0.1:3426/state            # 查看当前状态
 curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
@@ -61,6 +65,8 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 | `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`；anthropic 协议另带 `anthropic-version`、`anthropic-beta: claude-code-20250219,…`、`X-Stainless-*` 全套 |
 | `pi` | anthropic 端点 `claude-cli/2.1.75`；responses 端点 `pi (win32 10.0.19045; x64)` | 与真实 pi 客户端行为一致，按请求的 SDK 包自动选形态 |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`、`X-ZCode-*`、`X-Device-Mid`（读本机真实设备 id）等 |
+| `opencode` | `Bun/1.4.4`（真实客户端不设自定义 UA，运行时即 Bun） | `HTTP-Referer: https://opencode.ai/`、`X-Title/X-Source: opencode`、会话三件套 `x-opencode-session-id`/`X-Session-Id`/`x-session-affinity`（`ses_<64hex>`，进程内固定） |
+| `antigravity` | `antigravity/hub/2.26.0 (aidev_client; os_type=windows; arch=amd64)` | 无（真实 Antigravity Hub 只发 UA）；已知构建号才带 `; cl=…` |
 | `off` | 不改写 | 恢复 magpie 默认行为 |
 
 ## 配置文件 `~/.config/magpie/ua-switcher.json`
@@ -108,12 +114,14 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 # 5. 验证完把 "selfcheck" 改回 false 并重载
 ```
 
-单元测试：`magpie-bun.exe selftest.mjs`（69 项断言）。
+单元测试：`magpie-bun.exe selftest.mjs`（81 项断言）。
 
 ## 已知局限
 
 - `chat.headers` 只能新增/覆盖头，不能删除（原生 provider 路径无此限制）。
 - zcode 的 Start Plan（`-Trial`/gift 模型）路径会整体重建请求头，本插件对其 UA 不生效（也不应生效）。
+- opencode：真实客户端只在 OpenRouter 等少数官方 provider 上发 `X-Title`/`HTTP-Referer`/`X-Source`，连自定义 baseURL 时只带会话头；本插件为便于中转站识别而全量发送，属有意偏差。
+- antigravity：`cl=` 只在已知构建号（2.23.0/2.23.1/2.24.0）出现，未知版本省略而非冒充；中转站若校验构建号，可手动钉版本并扩展 CL 表。
 - 只影响 magpie → 上游的请求头；不改变下游 agent → magpie 的请求。
 - 网页开关只绑 `127.0.0.1`。
 - 在 magpie 界面里编辑 provider 后，以界面保存的内容为准（插件下次切换时重写自己的键）。
