@@ -217,5 +217,24 @@ eq("antigravity known cl", String(h["User-Agent"]).includes("; cl=1000335682)"),
 rc = await postCfg({ versions: { antigravity: "" } })
 eq("antigravity pin cleared", rc.j.ok, true)
 
+// asar reader — antigravity version detection anchors on it
+const asarPath = path.join(os.tmpdir(), `ua-switcher-selftest-${process.pid}.asar`)
+{
+  const pkg = Buffer.from(JSON.stringify({ name: "antigravity", version: "2.26.0" }))
+  const header = Buffer.from(JSON.stringify({ files: { "package.json": { size: pkg.length, offset: "0" } } }))
+  const jsonLen = header.length
+  const headerSize = Math.ceil((jsonLen + 8) / 4) * 4
+  const pre = Buffer.alloc(16)
+  pre.writeUInt32LE(4, 0)
+  pre.writeUInt32LE(headerSize, 4)
+  pre.writeUInt32LE(headerSize - 4, 8)
+  pre.writeUInt32LE(jsonLen, 12)
+  fs.writeFileSync(asarPath, Buffer.concat([pre, header, Buffer.alloc(headerSize - 8 - jsonLen), pkg]))
+}
+const { readAsarPackageVersion } = await import("./index.mjs")
+eq("asar reader parses package.json", readAsarPackageVersion(asarPath), "2.26.0")
+eq("asar reader rejects missing file", readAsarPackageVersion(path.join(os.tmpdir(), "nope-does-not-exist.asar")), null)
+eq("versions lists antigravity", (await (await fetch(base + "/versions")).json()).values.antigravity.inUse, "2.26.0")
+
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)

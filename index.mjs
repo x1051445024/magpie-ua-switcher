@@ -289,15 +289,83 @@ function saveFetchedVersions(versions) {
   return data
 }
 
-// precedence: a hand pin in the config > the last value fetched from npm > built-in
+// precedence: a hand pin in the config > the local Antigravity install (only for
+// the antigravity key) > the last value fetched from npm > built-in
 function versionsOf(cfg) {
   const out = { ...DEFAULT_VERSIONS }
   const fetched = loadFetchedVersions().versions
+  const detected = { antigravity: detectAntigravityVersion() }
   for (const k of Object.keys(DEFAULT_VERSIONS)) {
     if (typeof cfg?.versions?.[k] === "string" && VERSION_RE.test(cfg.versions[k])) out[k] = cfg.versions[k]
+    else if (typeof detected[k] === "string") out[k] = detected[k]
     else if (typeof fetched[k] === "string") out[k] = fetched[k]
   }
   return out
+}
+
+// ---- local Antigravity install ------------------------------------------------
+
+// Antigravity's Hub release lives in the app.asar root package.json
+// ("version", e.g. 2.26.0 — the same value the running language server gets as
+// --override_ide_version). Reading it keeps the profile's UA in step with a
+// client upgrade without any network call. Any failure means "unknown" and the
+// built-in / pinned version wins.
+export function readAsarPackageVersion(asarPath) {
+  let fd
+  try {
+    fd = fs.openSync(asarPath, "r")
+    const hdr = Buffer.alloc(16)
+    fs.readSync(fd, hdr, 0, 16, 0)
+    const headerSize = hdr.readUInt32LE(4)
+    let jsonLen = hdr.readUInt32LE(12)
+    let jsonOff = 16
+    const sane = (n) => n > 1 && n < 64 * 1024 * 1024
+    if (!sane(jsonLen)) {
+      // older asar layout: length sits at offset 8, JSON starts at 12
+      jsonLen = hdr.readUInt32LE(8)
+      jsonOff = 12
+      if (!sane(jsonLen)) return null
+    }
+    const raw = Buffer.alloc(jsonLen)
+    fs.readSync(fd, raw, 0, jsonLen, jsonOff)
+    const header = JSON.parse(raw.toString("utf8"))
+    const entry = header?.files?.["package.json"]
+    if (!entry || typeof entry.offset !== "string" || !Number.isFinite(Number(entry.size))) return null
+    let base = 8 + headerSize
+    if (base % 4) base += 4 - (base % 4)
+    const data = Buffer.alloc(Number(entry.size))
+    fs.readSync(fd, data, 0, data.length, base + Number(entry.offset))
+    const pkg = JSON.parse(data.toString("utf8"))
+    if (typeof pkg?.version === "string" && VERSION_RE.test(pkg.version)) return pkg.version
+    return null
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd) } catch {}
+  }
+}
+
+const ANTIGRAVITY_ASARS = [
+  path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Antigravity", "resources", "app.asar"),
+  "/Applications/Antigravity.app/Contents/Resources/app.asar",
+  "/usr/share/antigravity/resources/app.asar",
+  "/opt/antigravity/resources/app.asar",
+  path.join(os.homedir(), ".local", "share", "antigravity", "resources", "app.asar"),
+]
+let detectedCache = { path: null, mtime: -1, version: null }
+
+function detectAntigravityVersion() {
+  for (const p of ANTIGRAVITY_ASARS) {
+    if (!p) continue
+    try {
+      const st = fs.statSync(p)
+      if (detectedCache.path === p && detectedCache.mtime === st.mtimeMs) return detectedCache.version
+      const v = readAsarPackageVersion(p)
+      detectedCache = { path: p, mtime: st.mtimeMs, version: v }
+      return v
+    } catch {}
+  }
+  return null
 }
 
 let fetching = false
@@ -349,11 +417,12 @@ function versionState(cfg) {
   const inUse = versionsOf(cfg)
   const fetched = loadFetchedVersions()
   const pins = cfg.versions ?? {}
+  const detected = { antigravity: detectAntigravityVersion() }
   const values = {}
   for (const k of Object.keys(DEFAULT_VERSIONS)) {
     values[k] = {
       inUse: inUse[k],
-      source: typeof pins[k] === "string" ? "pinned" : fetched.versions[k] ? "fetched" : "builtin",
+      source: typeof pins[k] === "string" ? "pinned" : detected[k] ? "detected" : fetched.versions[k] ? "fetched" : "builtin",
       npm: NPM_PACKAGES[k] ?? null,
       npmLatest: fetched.versions[k] ?? null,
     }
