@@ -33,6 +33,7 @@ const DEFAULT_VERSIONS = {
   zcode: "3.16.3",
   aiSdk: "3.0.81", // the ai-sdk suffix ZCode's UA carries
   bun: "1.4.4", // the Bun runtime version opencode's binary reports as its UA
+  antigravity: "2.26.0", // Antigravity Hub release; also probed from the local install
 }
 
 // npm packages behind the auto-updated versions. aiSdk is deliberately not
@@ -61,6 +62,19 @@ function newOpencodeSessionId() {
   }
 }
 const OPENCODE_SESSION_ID = newOpencodeSessionId()
+
+// Antigravity Hub build changelists, as published with each release. A version
+// missing here omits cl= entirely — claiming another build's CL would be a lie
+// the real manifests never tell.
+const ANTIGRAVITY_CL = {
+  "2.23.0": "998057262",
+  "2.23.1": "998881661",
+  "2.24.0": "1000335682",
+}
+// The Hub names its runtime platform the Go way (runtime.GOOS/GOARCH).
+const ANTI_OS = { win32: "windows", darwin: "darwin", linux: "linux" }[os.platform()] ?? os.platform()
+const ANTI_ARCH = { x64: "amd64", arm64: "arm64", ia32: "386" }[os.arch()] ?? os.arch()
+const ANTIGRAVITY_PLATFORM = `os_type=${ANTI_OS}; arch=${ANTI_ARCH}`
 
 const OS_TYPE = { Windows_NT: "Windows", Darwin: "macOS", Linux: "Linux" }[os.type()] ?? os.type()
 const RUST_ARCH = { x64: "x86_64", arm64: "aarch64", ia32: "x86" }[process.arch] ?? process.arch
@@ -141,6 +155,14 @@ function builtinProfiles(V) {
           "x-session-affinity": OPENCODE_SESSION_ID,
         },
       },
+    },
+    antigravity: {
+      label: "Antigravity Hub",
+      ua: (() => {
+        const cl = ANTIGRAVITY_CL[V.antigravity]
+        return `antigravity/hub/${V.antigravity} (aidev_client; ${ANTIGRAVITY_PLATFORM}${cl ? `; cl=${cl}` : ""})`
+      })(),
+      // The Hub sends no companion headers — its User-Agent alone is the identity.
     },
     zcode: {
       label: "ZCode 客户端",

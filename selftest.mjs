@@ -205,5 +205,17 @@ eq("opencode pinned bun ua", h["User-Agent"], "Bun/9.9.9")
 rc = await postCfg({ versions: { bun: "" } })
 eq("opencode bun pin cleared", rc.j.ok, true)
 
+// antigravity profile: Hub UA only, cl= only for known builds
+await fetch(base + "/set/antigravity", { method: "POST" })
+h = await apply("any", "@ai-sdk/anthropic")
+eq("antigravity ua shape", /^antigravity\/hub\/2\.26\.0 \(aidev_client; os_type=\w+; arch=\w+\)$/.test(h["User-Agent"] ?? ""), true)
+eq("antigravity sends no extra headers", Object.keys(h), ["User-Agent"])
+rc = await postCfg({ versions: { antigravity: "2.24.0" } })
+eq("antigravity pin accepted", rc.j.ok, true)
+h = await apply("any", "@ai-sdk/openai")
+eq("antigravity known cl", String(h["User-Agent"]).includes("; cl=1000335682)"), true)
+rc = await postCfg({ versions: { antigravity: "" } })
+eq("antigravity pin cleared", rc.j.ok, true)
+
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)
