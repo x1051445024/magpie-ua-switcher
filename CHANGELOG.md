@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.1 — 2026-11-02
+
+**读写 magpie 实际使用的目录 / Using magpie's own folder**
+
+- 插件此前固定读 `~/.config/magpie`，而 magpie 按 portable → `$XDG_CONFIG_HOME/magpie` → `~/.config/magpie` 的顺序决定目录。magpie 官方 Docker 镜像设置了 `XDG_CONFIG_HOME=/config`、`HOME=/config/home`，providers.json 在 `/config/magpie`，插件却去 `/config/home/.config/magpie` 找：网页只列出 zcode，原生 provider 也从未被改写。
+  The plugin always read `~/.config/magpie`, while magpie picks portable → `$XDG_CONFIG_HOME/magpie` → `~/.config/magpie`. In magpie's Docker image providers.json is `/config/magpie`, so the page listed only zcode and native providers were never rewritten.
+- 新增 `paths.mjs`：优先用 magpie 传给插件的目录（插件入参 `directory`，即 magpie 的 `appdir.Config()`，含便携版），否则按 XDG 规则，再否则 `~/.config/magpie`；`UA_SWITCHER_CONFIG` / `UA_SWITCHER_PROVIDERS` 仍可覆盖。`index.mjs` 与网关钩子 `hooks.mjs` 共用它，两边读同一份配置。
+  New `paths.mjs`: the folder magpie hands the plugin (its `appdir.Config()`, portable included), else the XDG rule, else `~/.config/magpie`; the env overrides still win. The page and the gateway hook share it.
+- 旧目录里的 `ua-switcher.json`、`-versions.json`、`-userid.json` 会复制到新目录一次，已选档案和中转站见过的 user_id 不变。
+  Those files left in the old folder are copied over once, keeping the chosen profile and the user_id relays have seen.
+- `/state` 新增 `providersPath`、`providersError`（`providers` 仍是数组）；网页显示 providers.json 路径，读不到时给出警告；读失败不再静默。
+  `/state` adds `providersPath` and `providersError` (`providers` stays an array); the page shows the path and warns when it can't be read.
+- 改写 providers.json 时保留文件权限（magpie 为 0600）、写入符号链接的目标、失败时删除临时文件。
+  Rewriting providers.json keeps its mode (magpie's 0600), writes a symlink's target, and removes the temp file on failure.
+- selftest 新增路径解析、旧文件迁移、`/state` 与写入相关断言。
+  Selftest gains assertions for path resolution, migration, `/state` and the rewrite.
+
 ## 1.6.0 — 2026-11-02
 
 **工具 schema 兼容层 / Tool-schema compatibility**

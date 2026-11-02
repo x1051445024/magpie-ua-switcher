@@ -55,7 +55,7 @@ curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
   -d '{"excludeProviders":["zcode"],"versions":{"codex":"0.170.0"}}'  # 编程式改配置
 ```
 
-3. **直接改配置文件** `~/.config/magpie/ua-switcher.json`（下一次请求经过网关时生效）。
+3. **直接改配置文件** `~/.config/magpie/ua-switcher.json`（magpie Docker 镜像里是 `/config/magpie/ua-switcher.json`，见[文件位置](#文件位置)；下一次请求经过网关时生效）。
 
 ## 内置档案
 
@@ -100,6 +100,15 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `injectMetadata`：默认 true。为 Claude Code 身份档案的 anthropic 请求补 `metadata.user_id`（网关钩子）；关掉即完全不碰请求体。
 - `profiles`：自定义档案，合并覆盖同名内置。单形态 `{ "label", "ua", "headers": {"any","anthropic","openai"} }`；双形态 `forms: { anthropic, openai, default }`。
 - `applied`：插件内部记账，勿手工编辑。
+
+### 文件位置
+
+插件读取的 `providers.json`、自己的 `ua-switcher.json`（以及 `-versions` / `-userid` 两个附属文件）都放在 magpie 自己使用的目录：优先用 magpie 传给插件的目录（含便携版），否则在 `$XDG_CONFIG_HOME` 为绝对路径时用 `$XDG_CONFIG_HOME/magpie`，再否则用 `~/.config/magpie`。magpie 官方 Docker 镜像里是 `/config/magpie`（镜像设置了 `XDG_CONFIG_HOME=/config`、`HOME=/config/home`）。旧版本留在 `~/.config/magpie` 的文件会自动复制过来一次。网页和 `/state`（`providersPath`、`providersError`）会显示实际读取的 `providers.json` 及读不到的原因。
+
+如需指定别的位置，在 magpie 的运行环境里设置（容器用 `docker run -e …`）：
+
+- `UA_SWITCHER_PROVIDERS`：要读取并改写的 `providers.json`。
+- `UA_SWITCHER_CONFIG`：插件自己的 `ua-switcher.json`。
 
 ## 自检（验证改写真的到达上游）
 
