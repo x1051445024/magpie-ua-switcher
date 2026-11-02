@@ -5,7 +5,8 @@
 // applies last, over every other header source (SDK defaults, auth loader,
 // headers passed in by the main app). Switching is done from a tiny local
 // web page (default http://127.0.0.1:3426), by curl, or by editing
-// ~/.config/magpie/ua-switcher.json — all hot, no magpie restart needed.
+// ua-switcher.json in magpie's folder (~/.config/magpie, or /config/magpie in
+// magpie's Docker image; see paths.mjs) — all hot, no magpie restart needed.
 //
 // Known limits: chat.headers can add and override headers, not remove them;
 // the zcode provider's Start-Plan (-Trial) models rebuild their headers
@@ -15,10 +16,17 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomBytes } from "node:crypto"
+import { adoptLegacy, besideConfig, configPath, magpieDir, providersPath, useMagpieDir } from "./paths.mjs"
 
-const MAGPIE_DIR = path.join(os.homedir(), ".config", "magpie")
-const CONFIG_PATH = process.env.UA_SWITCHER_CONFIG || path.join(MAGPIE_DIR, "ua-switcher.json")
-const PROVIDERS_PATH = process.env.UA_SWITCHER_PROVIDERS || path.join(MAGPIE_DIR, "providers.json")
+// Resolved again once magpie hands in its folder (UASwitcherPlugin).
+let MAGPIE_DIR, CONFIG_PATH, PROVIDERS_PATH, VERSIONS_PATH
+function resolvePaths() {
+  MAGPIE_DIR = magpieDir()
+  CONFIG_PATH = configPath()
+  PROVIDERS_PATH = providersPath()
+  VERSIONS_PATH = besideConfig("-versions.json")
+}
+resolvePaths()
 const DEFAULT_PORT = 3426
 
 // Client versions the UA strings name. Built-ins are the floor; codex /
@@ -44,7 +52,6 @@ const NPM_PACKAGES = {
   "claude-code": "@anthropic-ai/claude-code",
 }
 const REGISTRIES = ["https://registry.npmjs.org", "https://registry.npmmirror.com"]
-const VERSIONS_PATH = CONFIG_PATH.replace(/\.json$/, "") + "-versions.json"
 
 // codex and pi build their UA's OS segment from the machine they run on, so
 // the switcher does the same instead of naming one fixed machine. codex is
@@ -1108,6 +1115,23 @@ export async function UASwitcherPlugin(input) {
     try {
       input?.client?.app?.log({ level, service: "ua-switcher", message })
     } catch {}
+  }
+  // magpie's own folder, as magpie decided it (portable and Docker included)
+  if (useMagpieDir(input?.directory)) {
+    resolvePaths()
+    cache = { mtime: -1, cfg: DEFAULTS }
+    versionsCache = { mtime: -1, data: null }
+  }
+  // 1.6.0 and before kept these in ~/.config/magpie whatever magpie used
+  if (!process.env.UA_SWITCHER_CONFIG) {
+    for (const f of [CONFIG_PATH, VERSIONS_PATH, besideConfig("-userid.json")]) {
+      try {
+        const from = adoptLegacy(f)
+        if (from) note(`copied ${path.basename(f)} from ${from} to ${path.dirname(f)}, the folder magpie uses`)
+      } catch (e) {
+        note(`cannot adopt ${path.basename(f)} from the old folder: ${e?.message ?? e}`, "error")
+      }
+    }
   }
   try {
     if (!fs.existsSync(CONFIG_PATH)) {

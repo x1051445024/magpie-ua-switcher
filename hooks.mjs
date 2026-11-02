@@ -12,56 +12,56 @@
 
 import crypto from "node:crypto"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
+import { besideConfig, configPath, providersPath } from "./paths.mjs"
 
-const MAGPIE_DIR = path.join(os.homedir(), ".config", "magpie")
-const CONFIG_PATH = process.env.UA_SWITCHER_CONFIG || path.join(MAGPIE_DIR, "ua-switcher.json")
-const PROVIDERS_PATH = process.env.UA_SWITCHER_PROVIDERS || path.join(MAGPIE_DIR, "providers.json")
-const USERID_PATH = CONFIG_PATH.replace(/\.json$/, "") + "-userid.json"
+// Paths are asked for on each use: this module is imported before the plugin
+// function learns magpie's folder (paths.mjs).
 
 // profiles whose anthropic form is Claude Code's identity
 const CLAUDE_CODE_PROFILES = new Set(["claude-code", "pi"])
 
 const USER_ID_RE = /^user_[0-9a-f]{32,128}_account_/
 
-let cfgCache = { mtime: -1, cfg: null }
-let idsCache = { mtime: -1, ids: [] }
+let cfgCache = { path: "", mtime: -1, cfg: null }
+let idsCache = { path: "", mtime: -1, ids: [] }
 let memoUserId = ""
 
 function loadCfg() {
+  const file = configPath()
   let st
   try {
-    st = fs.statSync(CONFIG_PATH)
+    st = fs.statSync(file)
   } catch {
     return null
   }
-  if (st.mtimeMs === cfgCache.mtime) return cfgCache.cfg
+  if (file === cfgCache.path && st.mtimeMs === cfgCache.mtime) return cfgCache.cfg
   let cfg = {}
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"))
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"))
     if (raw && typeof raw === "object" && !Array.isArray(raw)) cfg = raw
   } catch {}
-  cfgCache = { mtime: st.mtimeMs, cfg }
+  cfgCache = { path: file, mtime: st.mtimeMs, cfg }
   return cfg
 }
 
 // provider ids from providers.json, to tell a "provider/model" request model
 // apart from a routing group's name (group/..., auto/...).
 function providerIds() {
+  const file = providersPath()
   let st
   try {
-    st = fs.statSync(PROVIDERS_PATH)
+    st = fs.statSync(file)
   } catch {
     return []
   }
-  if (st.mtimeMs === idsCache.mtime) return idsCache.ids
+  if (file === idsCache.path && st.mtimeMs === idsCache.mtime) return idsCache.ids
   const ids = []
   try {
-    const j = JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf8"))
+    const j = JSON.parse(fs.readFileSync(file, "utf8"))
     for (const p of j?.providers ?? []) if (p && typeof p.id === "string") ids.push(p.id)
   } catch {}
-  idsCache = { mtime: st.mtimeMs, ids }
+  idsCache = { path: file, mtime: st.mtimeMs, ids }
   return ids
 }
 
@@ -77,8 +77,9 @@ function providerOf(model) {
 // requests and restarts instead of a new account every turn.
 function userId() {
   if (memoUserId) return memoUserId
+  const file = besideConfig("-userid.json")
   try {
-    const j = JSON.parse(fs.readFileSync(USERID_PATH, "utf8"))
+    const j = JSON.parse(fs.readFileSync(file, "utf8"))
     if (typeof j?.user_id === "string" && USER_ID_RE.test(j.user_id)) {
       memoUserId = j.user_id
       return memoUserId
@@ -87,10 +88,10 @@ function userId() {
   const id = `user_${crypto.randomBytes(32).toString("hex")}_account_${crypto.randomUUID()}_session_${crypto.randomUUID()}`
   memoUserId = id
   try {
-    fs.mkdirSync(path.dirname(USERID_PATH), { recursive: true })
-    const tmp = `${USERID_PATH}.tmp`
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.tmp`
     fs.writeFileSync(tmp, JSON.stringify({ user_id: id }, null, 2) + "\n")
-    fs.renameSync(tmp, USERID_PATH)
+    fs.renameSync(tmp, file)
   } catch {}
   return id
 }
@@ -126,7 +127,7 @@ function diagnose(body, ctx) {
       names: Array.isArray(tools) ? tools.map((t) => t?.name ?? "") : [],
       odd: oddSchemas(tools),
     }
-    const f = CONFIG_PATH.replace(/\.json$/, "") + "-tools.json"
+    const f = besideConfig("-tools.json")
     let all = []
     try {
       const prev = JSON.parse(fs.readFileSync(f, "utf8"))
