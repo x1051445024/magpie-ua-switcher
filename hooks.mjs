@@ -95,11 +95,55 @@ function userId() {
   return id
 }
 
+// diagnose (config "diagnose": true): record which tool schemas the client
+// sends that Anthropic would reject — a top-level oneOf/allOf/anyOf, or a
+// missing top-level type. Read-only: the request is never modified.
+function oddSchemas(tools) {
+  const out = []
+  if (!Array.isArray(tools)) return out
+  for (const t of tools) {
+    if (!t || typeof t !== "object") continue
+    const s = t.input_schema ?? t.inputSchema ?? t.parameters
+    if (!s || typeof s !== "object" || Array.isArray(s)) continue
+    const top = ["oneOf", "allOf", "anyOf"].filter((k) => k in s)
+    const entry = { name: t.name ?? "", top, keys: Object.keys(s) }
+    if (top.length || !("type" in s)) out.push(entry)
+  }
+  return out
+}
+
+function diagnose(body, ctx) {
+  try {
+    const tools = body?.tools
+    const count = Array.isArray(tools) ? tools.length : 0
+    if (!count) return // magpie's own calls (titles, classifiers) carry no tools
+    const report = {
+      at: new Date().toISOString(),
+      protocol: ctx?.protocol ?? "",
+      model: ctx?.model ?? "",
+      agent: ctx?.agent ?? "",
+      toolCount: count,
+      names: Array.isArray(tools) ? tools.map((t) => t?.name ?? "") : [],
+      odd: oddSchemas(tools),
+    }
+    const f = CONFIG_PATH.replace(/\.json$/, "") + "-tools.json"
+    let all = []
+    try {
+      const prev = JSON.parse(fs.readFileSync(f, "utf8"))
+      if (Array.isArray(prev)) all = prev
+    } catch {}
+    all.push(report)
+    fs.writeFileSync(f, JSON.stringify(all.slice(-20), null, 2) + "\n")
+  } catch {}
+}
+
 export async function onRequest(body, ctx) {
   try {
     if (!body || typeof body !== "object" || Array.isArray(body)) return
+    const cfg0 = loadCfg()
+    if (cfg0?.diagnose === true) diagnose(body, ctx)
     if (ctx?.protocol !== "anthropic") return
-    const cfg = loadCfg()
+    const cfg = cfg0
     if (!cfg || cfg.injectMetadata === false) return
     const provider = providerOf(ctx?.model)
     const excludes = Array.isArray(cfg.excludeProviders) ? cfg.excludeProviders : []

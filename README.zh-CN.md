@@ -132,3 +132,9 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 ## License
 
 MIT — 见 [LICENSE](LICENSE)。
+
+## 工具 schema 诊断（可选）
+
+配置里设 `"diagnose": true` 并重载插件后，每个带工具的请求都会检查一次工具定义，把 Anthropic 会拒绝的项写进 `~/.config/magpie/ua-switcher-tools.json`（顶层 `oneOf`/`allOf`/`anyOf`，或缺少顶层 `type`）。只读，不改请求。
+
+Anthropic 的 Messages API 不接受工具 `input_schema` 顶层的 `oneOf`/`allOf`/`anyOf`；有些 MCP 工具用 zod 的 `.refine()` 表达互斥参数，转成 JSON Schema 后正好落在顶层，于是只有真 Anthropic 端会报 `input_schema does not support oneOf, allOf, or anyOf at the top level`，而 GLM 等兼容层不校验。用这个诊断能直接定位是哪个工具。
