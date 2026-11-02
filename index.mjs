@@ -495,7 +495,9 @@ function providersApply(cfg) {
   let raw
   try {
     raw = fs.readFileSync(PROVIDERS_PATH, "utf8")
-  } catch {
+  } catch (e) {
+    // not silent: a wrong folder looks exactly like "nothing to rewrite"
+    note(`cannot read ${PROVIDERS_PATH} (${e?.code ?? e?.message ?? e}); native providers left untouched`, "warn")
     return
   }
   let json
@@ -715,22 +717,27 @@ function cleanProfiles(v) {
 }
 
 // providersForUi lists what the provider sections of the page offer: every
-// native entry of providers.json plus the plugin-declared zcode provider.
+// native entry of providers.json plus the plugin-declared zcode provider, and
+// why providers.json couldn't be read (null when it could).
 function providersForUi() {
   const out = [{ id: "zcode", name: "ZCode（插件 provider）", off: false, wire: "anthropic" }]
+  let error = null
   try {
     const j = JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf8"))
     for (const p of j.providers ?? []) {
       if (p && typeof p === "object" && typeof p.id === "string" && !out.some((q) => q.id === p.id))
         out.push({ id: p.id, name: String(p.name ?? p.id), off: p.off === true, wire: wireOf(p) })
     }
-  } catch {}
-  return out
+  } catch (e) {
+    error = e?.code === "ENOENT" ? "not found" : String(e?.message ?? e)
+  }
+  return { list: out, error }
 }
 
 function state() {
   const cfg = loadCfg()
   const profiles = effectiveProfiles(cfg)
+  const prov = providersForUi()
   return {
     plugin: "ua-switcher",
     profile: cfg.profile,
@@ -741,7 +748,9 @@ function state() {
     configPath: CONFIG_PATH,
     versions: versionState(cfg),
     pins: cfg.versions ?? {},
-    providers: providersForUi(),
+    providers: prov.list, // stays an array: the page and curl scripts read it as one
+    providersPath: PROVIDERS_PATH,
+    providersError: prov.error,
     customProfiles: Object.fromEntries(
       Object.entries(cfg.profiles).map(([id, p]) => [
         id,
@@ -841,6 +850,7 @@ label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
 
 <div class="card">
 <h2>Provider 设置</h2>
+<div id="provwarn" hidden style="margin:0 0 12px;padding:8px 12px;border:1px solid #6b3a2b;border-radius:8px;background:#2a1a16;color:#ffb4a8;font-size:.85em"></div>
 <label style="display:flex;gap:9px;align-items:flex-start;margin:0 0 14px;color:#c7cbd1;font-size:.85em;cursor:pointer">
 <input type="checkbox" id="inj" style="width:auto;margin-top:3px;accent-color:#7ab0ff">
 <span>为 Claude Code 档案补充 <code style="background:#22272f;padding:0 4px;border-radius:3px">metadata.user_id</code>（写入请求体）<br><span style="color:#9aa0a6;font-size:.85em">严格校验 Claude Code 身份的中转站需要它；只作用于 anthropic 协议</span></span>
@@ -884,6 +894,7 @@ label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
 <div class="box">
 <div class="row"><b>curl 切换</b>：<code>curl http://127.0.0.1:<span id="port"></span>/set/claude-code</code>（或 codex / pi / zcode / off）</div>
 <div class="row"><b>配置文件</b>：<code id="cfgpath"></code>（本页所有改动同样写入此文件，手动编辑亦热生效）</div>
+<div class="row"><b>magpie providers</b>：<code id="provpath"></code></div>
 </div>
 
 <div id="status"></div>
@@ -900,6 +911,10 @@ function render(){
 document.getElementById("cur").textContent=(S.profiles.find(function(p){return p.id===S.profile})||{}).label||S.profile
 document.getElementById("port").textContent=S.port
 document.getElementById("cfgpath").textContent=S.configPath
+document.getElementById("provpath").textContent=S.providersPath||""
+var pw=document.getElementById("provwarn")
+pw.hidden=!S.providersError
+pw.textContent=S.providersError?"读不到 magpie 的 providers.json（"+S.providersPath+"："+S.providersError+"），下方只列出插件自带的 zcode，原生 provider 也不会被改写。若 magpie 的配置在别处，用环境变量 UA_SWITCHER_PROVIDERS 指定。":""
 document.getElementById("grid").innerHTML=S.profiles.map(function(p){return '<button class="p'+(p.id===S.profile?" on":"")+'" data-id="'+esc(p.id)+'"><span>'+esc(p.label)+'</span><code>'+esc(p.id)+'</code></button>'}).join("")
 var keys=Object.keys(S.versions.values)
 document.getElementById("vinfo").textContent=S.versions.autoVersions?("· 自动更新开 · 每 "+S.versions.updateEveryHours+" 小时 · 上次检查 "+when(S.versions.fetchedAt)):"· 自动更新已关"

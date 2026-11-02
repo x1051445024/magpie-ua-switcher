@@ -153,6 +153,12 @@ async function postCfg(body) {
   return { status: res.status, j: await res.json().catch(() => ({})) }
 }
 eq("state lists providers", (await (await fetch(base + "/state")).json()).providers.map((p) => p.id), ["zcode", "p-responses", "p-anthropic"])
+let st0 = await (await fetch(base + "/state")).json()
+eq("state names providers.json", [st0.providersPath, st0.providersError], [provPath, null])
+fs.renameSync(provPath, provPath + ".away")
+st0 = await (await fetch(base + "/state")).json()
+eq("state says providers.json is missing", [st0.providers.map((p) => p.id), st0.providersError], [["zcode"], "not found"])
+fs.renameSync(provPath + ".away", provPath)
 let rc = await postCfg({ versions: { codex: "8.8.8" } })
 eq("config saves pins", rc.j.ok, true)
 await fetch(base + "/set/codex", { method: "POST" })
