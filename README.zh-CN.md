@@ -11,6 +11,8 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 1. **原生 provider**（providers.json 里的 API-key 条目，如中转站，由 magpie 的 Go 侧直接发请求）：切换档案时，插件把解析出的头写进 providers.json 对应条目的 `headers` 字段——该字段在 magpie 里**永远优先**于默认 UA，且 providers.json 热加载。只动插件自己写入的键（记录在配置文件 `applied` 字段），你手工设置的其他 headers 不受影响；切回 `off` 时恰好移除这些键。
 2. **插件宿主路径的 provider**（如 zcode-auth 声明的 zcode）：通过 `chat.headers` 钩子注入，优先级最高，逐请求生效。
 
+此外还有一条 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 让 magpie 自动加载）：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）、且请求走 anthropic 协议时，往请求体补 `metadata.user_id`（真实 Claude Code 的格式）。严格校验 Claude Code 身份的中转站要求「原始 UA + metadata.user_id 齐全」，只改头不改体会被拒或断流（上游常记为 499）；补上后即可通过。该 id 首次生成后持久化，跨请求稳定；客户端自带时不覆盖。可在网页「Provider 设置」里关闭（配置项 `injectMetadata`）。
+
 协议自适应：按 provider/模型的 SDK 包或 providers.json 的 wire 字段识别 anthropic / openai(responses) 协议，anthropic 专属头（anthropic-beta、X-Stainless-* 等）只发给 anthropic 协议请求，OpenAI-Beta 等只发给 responses 请求。
 
 版本解析优先级：**内置默认 < 本机 Antigravity 安装（仅 antigravity 键）< npm 抓取 < 手动钉死**。`antigravity` 从本机安装的 `app.asar` 根 `package.json` 读取（与运行中 language server 的 `--override_ide_version` 同值）；`bun`（opencode 的运行时 UA 版本）与 `antigravity` 不从 npm 抓取——Bun 版本只存在于 opencode 的编译产物里，Antigravity 也没有 npm 包。
@@ -95,6 +97,7 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `selfcheck`：自检模式，见下。
 - `autoVersions` / `updateEveryHours` / `registry`：npm 版本自动更新的开关、查询间隔（小时）、额外的首选 registry。
 - `versions`：手动钉版本，如 `{"codex": "0.170.0"}`，优先级最高。
+- `injectMetadata`：默认 true。为 Claude Code 身份档案的 anthropic 请求补 `metadata.user_id`（网关钩子）；关掉即完全不碰请求体。
 - `profiles`：自定义档案，合并覆盖同名内置。单形态 `{ "label", "ua", "headers": {"any","anthropic","openai"} }`；双形态 `forms: { anthropic, openai, default }`。
 - `applied`：插件内部记账，勿手工编辑。
 

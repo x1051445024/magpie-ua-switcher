@@ -236,5 +236,43 @@ eq("asar reader parses package.json", readAsarPackageVersion(asarPath), "2.26.0"
 eq("asar reader rejects missing file", readAsarPackageVersion(path.join(os.tmpdir(), "nope-does-not-exist.asar")), null)
 eq("versions lists antigravity", (await (await fetch(base + "/versions")).json()).values.antigravity.inUse, "2.26.0")
 
+// --- gateway hook (hooks.mjs): metadata.user_id injection ---
+const { onRequest } = await import("./hooks.mjs")
+const uidPath = cfgPath.replace(/\.json$/, "") + "-userid.json"
+const gctx = (protocol, model) => ({ protocol, model })
+const setCfg = (patch) => {
+  const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+  Object.assign(c, patch)
+  fs.writeFileSync(cfgPath, JSON.stringify(c))
+}
+const callHook = async (b, protocol, model) => (await onRequest(b, gctx(protocol, model))) ?? null
+
+setCfg({ profile: "claude-code", excludeProviders: ["zcode"], providerOverrides: {}, injectMetadata: true })
+const gbody = { model: "m", max_tokens: 8, stream: true, tools: [{ name: "t" }], messages: [{ role: "user", content: "hi" }] }
+const got = await callHook(structuredClone(gbody), "anthropic", "draw-shuaizhan/claude-opus-5-5")
+eq("gateway injects user_id", /^user_[0-9a-f]{64}_account_.+_session_.+$/.test(got?.metadata?.user_id ?? ""), true)
+eq("gateway keeps tools", JSON.stringify(got?.tools), JSON.stringify(gbody.tools))
+eq("gateway keeps model and stream", [got?.model, got?.stream], [gbody.model, gbody.stream])
+eq("gateway keeps messages", JSON.stringify(got?.messages), JSON.stringify(gbody.messages))
+const got2 = await callHook({ model: "m", messages: [] }, "anthropic", "p-anthropic/claude")
+eq("gateway reuses one user id", got2?.metadata?.user_id, got?.metadata?.user_id)
+eq("user id persisted", fs.existsSync(uidPath), true)
+
+eq("gateway leaves client user_id", await callHook({ model: "m", metadata: { user_id: "user_own", x: 1 } }, "anthropic", "x/y"), null)
+eq("gateway skips responses wire", await callHook({ model: "m" }, "responses", "x/y"), null)
+eq("gateway skips chat wire", await callHook({ model: "m" }, "chat", "x/y"), null)
+eq("gateway skips excluded provider", await callHook({ model: "m" }, "anthropic", "zcode/GLM-5.3"), null)
+eq("gateway applies to routing groups", (await callHook({ model: "m" }, "anthropic", "group/zcode"))?.metadata?.user_id ? true : false, true)
+setCfg({ profile: "codex" })
+eq("gateway skips codex profile", await callHook({ model: "m" }, "anthropic", "x/y"), null)
+setCfg({ profile: "off" })
+eq("gateway skips off profile", await callHook({ model: "m" }, "anthropic", "x/y"), null)
+setCfg({ profile: "claude-code", providerOverrides: { "p-anthropic": "codex" } })
+eq("gateway respects provider override", await callHook({ model: "m" }, "anthropic", "p-anthropic/claude"), null)
+eq("gateway other provider keeps global", (await callHook({ model: "m" }, "anthropic", "p-responses/x"))?.metadata?.user_id ? true : false, true)
+setCfg({ providerOverrides: {}, injectMetadata: false })
+eq("gateway honors injectMetadata=false", await callHook({ model: "m" }, "anthropic", "x/y"), null)
+setCfg({ injectMetadata: true })
+
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)

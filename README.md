@@ -11,6 +11,8 @@ magpie has two upstream paths, and this plugin covers both:
 1. **Native providers** (API-key entries in `providers.json`, e.g. relay stations — fetched by magpie's Go side): on every switch the plugin writes the resolved headers into each provider's `headers` field, which magpie always honors and hot-reloads. Only keys the plugin itself wrote are ever touched (tracked in the config's `applied` field), so headers you set by hand survive; switching to `off` removes exactly those keys.
 2. **Plugin-host providers** (declared by plugins such as `opencode-zcode-auth`): rewritten per request through the `chat.headers` hook, which wins over every other header source.
 
+A third mechanism completes the picture: a **gateway hook** (`hooks.mjs`, discovered by magpie through `package.json`'s `magpie.hooks`). While the effective profile is `claude-code` (or pi's anthropic form) and the wire is anthropic, it fills the request body's `metadata.user_id` in the real Claude Code shape. Relays that demand the complete Claude Code identity (original UA plus `metadata.user_id`) otherwise refuse or cut the stream — the upstream often logs that as 499. The id is generated once, persisted, and stable across requests; a client-sent `user_id` is never overwritten. Turn it off in the web UI's Provider settings (`injectMetadata`).
+
 Protocol-aware: the plugin detects the wire protocol (anthropic / openai-responses) per request and only attaches protocol-appropriate companion headers (`anthropic-beta`, `X-Stainless-*` for anthropic; `OpenAI-Beta: responses=experimental`, `originator` for responses).
 
 ## Install
@@ -98,6 +100,7 @@ The OS segment of codex/pi/antigravity UAs is generated from the machine the plu
 - `selfcheck` — self-test mode, see below.
 - `autoVersions` / `updateEveryHours` / `registry` — the npm auto-update: on/off, fetch interval in hours, an extra registry tried first.
 - `versions` — hand pins, e.g. `{"codex": "0.170.0"}`; always beats a fetched value.
+- `injectMetadata` — default true. Fill `metadata.user_id` on anthropic requests for the Claude Code profiles (the gateway hook); off means the body is never touched.
 - `profiles` — custom profiles, merged over the built-ins. Single form: `{ "label", "ua", "headers": { "any": {}, "anthropic": {}, "openai": {} } }`; per-protocol forms: `forms: { anthropic, openai, default }`.
 - `applied` — internal bookkeeping of keys the plugin wrote into `providers.json`; don't edit by hand.
 

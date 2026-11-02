@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.5.0 — 2026-11-02
+
+**补齐 Claude Code 请求特征：metadata.user_id / Completing the Claude Code identity**
+
+- 新增 gateway 钩子 `hooks.mjs`（经 `package.json` 的 `magpie.hooks` 由 magpie 自动加载）：在 `claude-code`（及 pi 的 anthropic 形态）档案生效、且请求走 anthropic 协议时，为请求体补上 `metadata.user_id`（格式 `user_<64hex>_account_<uuid>_session_<uuid>`，与真实 Claude Code 一致）。
+  New gateway hook `hooks.mjs` (discovered via `package.json`'s `magpie.hooks`): while the `claude-code` profile (or pi's anthropic form) is in effect and the wire is anthropic, it fills the request body's `metadata.user_id` with the real Claude Code shape.
+- 严格校验 Claude Code 身份的中转站（要求原始 UA + `metadata.user_id`）此前会拒绝或断流（上游记 499）；补上该字段后校验通过。
+  Relays that demand the complete Claude Code identity (original UA + `metadata.user_id`) previously refused or cut the stream (upstream saw 499); with the field present they pass.
+- user_id 首次生成后持久化到 `ua-switcher-userid.json`，跨请求、跨重启稳定；客户端自带 metadata.user_id 时原样保留。
+  The id is generated once and persisted to `ua-switcher-userid.json`, stable across requests and restarts; a client-sent `user_id` is left untouched.
+- 新增配置 `injectMetadata`（默认 true），网页「Provider 设置」新增开关；排除的 provider 不会被注入；codex / off 等非 Claude Code 档案不触碰请求体。
+  New `injectMetadata` config (default true) with a switch in the web UI's Provider settings; excluded providers are skipped; codex/off and other profiles never touch the body.
+- 恢复 `zcode` 到默认排除列表（此前为空，Z.ai 线路被误改写）。
+  `zcode` is excluded again by default (it had been cleared, so Z.ai's line was being rewritten).
+- selftest 新增 20 项 gateway 钩子断言。
+  Selftest gains 20 gateway-hook assertions.
+
 ## 1.4.0 — 2026-10-28
 
 **opencode 与 Antigravity 档案 / opencode and Antigravity profiles**

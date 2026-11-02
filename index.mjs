@@ -223,6 +223,8 @@ function normalize(raw) {
   const hours = Number(c.updateEveryHours)
   c.updateEveryHours = Number.isFinite(hours) && hours > 0 ? hours : 24
   c.registry = typeof c.registry === "string" && /^https?:\/\//.test(c.registry) ? c.registry : null
+  // gateway hook (hooks.mjs): fill metadata.user_id for Claude Code profiles
+  c.injectMetadata = c.injectMetadata !== false
   return c
 }
 
@@ -727,6 +729,7 @@ function state() {
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
+    injectMetadata: cfg.injectMetadata !== false,
     port: server ? server.port : cfg.port,
     configPath: CONFIG_PATH,
     versions: versionState(cfg),
@@ -831,6 +834,10 @@ label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
 
 <div class="card">
 <h2>Provider 设置</h2>
+<label style="display:flex;gap:9px;align-items:flex-start;margin:0 0 14px;color:#c7cbd1;font-size:.85em;cursor:pointer">
+<input type="checkbox" id="inj" style="width:auto;margin-top:3px;accent-color:#7ab0ff">
+<span>为 Claude Code 档案补充 <code style="background:#22272f;padding:0 4px;border-radius:3px">metadata.user_id</code>（写入请求体）<br><span style="color:#9aa0a6;font-size:.85em">严格校验 Claude Code 身份的中转站需要它；只作用于 anthropic 协议</span></span>
+</label>
 <label>排除的 provider（不改写）</label>
 <div class="chips" id="exchips"></div>
 <div style="display:flex;gap:8px"><select id="exsel"></select><button class="btn" id="exadd">添加排除</button></div>
@@ -895,6 +902,7 @@ var tag=v.source==="pinned"?'<span class="tag pin">钉死</span>':v.source==="de
 return '<div class="vrow"><div class="vname"><b>'+esc(k)+'</b>'+tag+(v.npm?'<div style="font-size:.75em;color:#666">'+esc(v.npm)+'</div>':"")+'</div><input type="text" data-vk="'+esc(k)+'" value="'+esc(S.pins[k]||"")+'" placeholder="当前 '+esc(v.inUse)+'"></div>'}).join("")
 excl=S.excludeProviders.slice()
 renderEx()
+document.getElementById("inj").checked=S.injectMetadata!==false
 var profs=S.profiles
 document.getElementById("ovrows").innerHTML=S.providers.map(function(p){
 var opts=['<option value="">跟随全局</option>'].concat(profs.map(function(q){return '<option value="'+esc(q.id)+'"'+((S.providerOverrides[p.id]||"")===q.id?" selected":"")+'>'+esc(q.label)+'</option>'})).join("")
@@ -934,7 +942,7 @@ document.getElementById("exadd").onclick=function(){var v=document.getElementByI
 document.getElementById("exchips").addEventListener("click",function(e){var b=e.target.closest("[data-unex]");if(!b)return;excl=excl.filter(function(x){return x!==b.dataset.unex});renderEx()})
 document.getElementById("psave").onclick=function(){
 var ov={};document.querySelectorAll("[data-ov]").forEach(function(s){if(s.value)ov[s.dataset.ov]=s.value})
-post({excludeProviders:excl,providerOverrides:ov}).then(function(){flash("Provider 设置已保存");load()}).catch(function(e){flash(e.message,true)})}
+post({excludeProviders:excl,providerOverrides:ov,injectMetadata:document.getElementById("inj").checked}).then(function(){flash("Provider 设置已保存");load()}).catch(function(e){flash(e.message,true)})}
 document.getElementById("pfnew").onclick=function(){openForm()}
 document.getElementById("pfcancel").onclick=function(){document.getElementById("pform").hidden=true}
 function openForm(id){var f=document.getElementById("pform");f.hidden=false
@@ -1017,6 +1025,10 @@ async function handle(req) {
       if ("excludeProviders" in body) patch.excludeProviders = cleanExcludes(body.excludeProviders)
       if ("providerOverrides" in body) patch.providerOverrides = cleanOverrides(body.providerOverrides, profiles)
       if ("versions" in body) patch.versions = cleanPins(body.versions)
+      if ("injectMetadata" in body) {
+        if (typeof body.injectMetadata !== "boolean") throw new Error("injectMetadata 必须是布尔值")
+        patch.injectMetadata = body.injectMetadata
+      }
       if (incomingProfiles) patch.profiles = incomingProfiles
     } catch (e) {
       return json({ ok: false, error: e?.message ?? String(e) }, 400)
