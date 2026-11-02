@@ -535,12 +535,27 @@ function providersApply(cfg) {
     else delete applied[p.id]
   }
   if (changed) {
+    // As magpie writes it: the keys inside stay private (magpie's 0600, or
+    // whatever mode the file has), a symlinked file has its target written
+    // rather than the link replaced, and no temp file is left behind.
+    let target = PROVIDERS_PATH
     try {
-      const tmp = `${PROVIDERS_PATH}.ua-switcher.tmp`
-      fs.writeFileSync(tmp, JSON.stringify(json, null, 2))
-      fs.renameSync(tmp, PROVIDERS_PATH)
+      target = fs.realpathSync(PROVIDERS_PATH)
+    } catch {}
+    let mode = 0o600
+    try {
+      mode = fs.statSync(target).mode & 0o777
+    } catch {}
+    const tmp = `${target}.ua-switcher.tmp`
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(json, null, 2), { mode })
+      fs.chmodSync(tmp, mode) // writeFileSync's mode is masked by umask
+      fs.renameSync(tmp, target)
       note(`rewrote headers of native providers per profile "${cfg.profile}"`)
     } catch (e) {
+      try {
+        fs.unlinkSync(tmp)
+      } catch {}
       note(`cannot write providers.json: ${e?.message ?? e}`, "error")
       return
     }

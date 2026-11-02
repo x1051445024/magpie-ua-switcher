@@ -129,8 +129,11 @@ eq("page renders", (await (await fetch(base + "/")).text()).includes("magpie UA"
 eq("logs flow through client.app.log", logs.length > 0, true)
 
 // native providers (providers.json headers) — codex
+if (process.platform !== "win32") fs.chmodSync(provPath, 0o600)
 await fetch(base + "/set/codex", { method: "POST" })
 let ps = Object.fromEntries(prov().map((p) => [p.id, p]))
+if (process.platform !== "win32") eq("native rewrite keeps providers.json 0600", (fs.statSync(provPath).mode & 0o777).toString(8), "600")
+eq("native rewrite leaves no temp file", fs.existsSync(provPath + ".ua-switcher.tmp"), false)
 eq("native responses UA", String(ps["p-responses"].headers["User-Agent"]).startsWith("codex_cli_rs/0.164.0 ("), true)
 eq("native responses originator+beta", [ps["p-responses"].headers["originator"], ps["p-responses"].headers["OpenAI-Beta"]], ["codex_cli_rs", "responses=experimental"])
 eq("native keeps user's own header", ps["p-responses"].headers["X-Keep"], "mine")
