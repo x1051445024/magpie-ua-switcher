@@ -140,3 +140,21 @@ Unit tests: `magpie-bun.exe selftest.mjs` (81 assertions: every profile × proto
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Tool-schema compatibility (gateway middleware)
+
+`schema.middleware.mjs` is loaded by magpie's own process (moejs, not the plugin host) through `package.json`'s `magpie.middleware`. On anthropic requests it cleans the **top level** of every tool's `input_schema`:
+
+- drops top-level `oneOf` / `allOf` / `anyOf` (a real Anthropic endpoint rejects them; GLM-style upstreams tolerate them, which is why this only surfaced on the Claude line)
+- adds `type: "object"` / `properties: {}` when missing
+- removes `required` names that have no matching property
+
+Nested unions are legal and left alone; requests that need nothing pass through byte-identical. A schema that was nothing but a union gets its branches' `properties` merged.
+
+**Turning it off** — the moejs sandbox cannot read config files, so there is no web toggle:
+
+```bash
+magpie plugin options github:x1051445024/magpie-ua-switcher '{"disable":true}'
+```
+
+Then `plugin off` / `plugin on` (or restart magpie) so the loaded middleware picks it up.

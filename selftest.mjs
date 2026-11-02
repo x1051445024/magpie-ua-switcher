@@ -208,7 +208,7 @@ eq("opencode bun pin cleared", rc.j.ok, true)
 // antigravity profile: Hub UA only, cl= only for known builds
 await fetch(base + "/set/antigravity", { method: "POST" })
 h = await apply("any", "@ai-sdk/anthropic")
-eq("antigravity ua shape", /^antigravity\/hub\/2\.26\.0 \(aidev_client; os_type=\w+; arch=\w+\)$/.test(h["User-Agent"] ?? ""), true)
+eq("antigravity ua shape", /^antigravity\/hub\/\d+\.\d+\.\d+ \(aidev_client; os_type=\w+; arch=\w+\)$/.test(h["User-Agent"] ?? ""), true)
 eq("antigravity sends no extra headers", Object.keys(h), ["User-Agent"])
 rc = await postCfg({ versions: { antigravity: "2.24.0" } })
 eq("antigravity pin accepted", rc.j.ok, true)
@@ -234,16 +234,25 @@ const asarPath = path.join(os.tmpdir(), `ua-switcher-selftest-${process.pid}.asa
 const { readAsarPackageVersion } = await import("./index.mjs")
 eq("asar reader parses package.json", readAsarPackageVersion(asarPath), "2.26.0")
 eq("asar reader rejects missing file", readAsarPackageVersion(path.join(os.tmpdir(), "nope-does-not-exist.asar")), null)
-eq("versions lists antigravity", (await (await fetch(base + "/versions")).json()).values.antigravity.inUse, "2.26.0")
+const vsA = (await (await fetch(base + "/versions")).json()).values.antigravity
+// the version comes from the local install when there is one, so only its
+// shape and provenance are asserted, not a number this machine may update
+eq("versions lists antigravity", /^\d+\.\d+\.\d+$/.test(vsA.inUse) && ["detected", "builtin", "fetched", "pinned"].includes(vsA.source), true)
 
 // --- gateway hook (hooks.mjs): metadata.user_id injection ---
 const { onRequest } = await import("./hooks.mjs")
 const uidPath = cfgPath.replace(/\.json$/, "") + "-userid.json"
 const gctx = (protocol, model) => ({ protocol, model })
+let mtimeBump = 0
 const setCfg = (patch) => {
   const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
   Object.assign(c, patch)
   fs.writeFileSync(cfgPath, JSON.stringify(c))
+  // bump mtime past the millisecond the previous write landed in, so the
+  // module-level mtime cache in hooks.mjs re-reads instead of replaying
+  mtimeBump++
+  const t = 1700000000 + mtimeBump
+  fs.utimesSync(cfgPath, t, t)
 }
 const callHook = async (b, protocol, model) => (await onRequest(b, gctx(protocol, model))) ?? null
 
@@ -273,6 +282,52 @@ eq("gateway other provider keeps global", (await callHook({ model: "m" }, "anthr
 setCfg({ providerOverrides: {}, injectMetadata: false })
 eq("gateway honors injectMetadata=false", await callHook({ model: "m" }, "anthropic", "x/y"), null)
 setCfg({ injectMetadata: true })
+
+// --- gateway middleware (schema.middleware.mjs): top-level union cleanup ---
+const { onRequest: schemaHook } = await import("./schema.middleware.mjs")
+const mw = (b, protocol = "anthropic", options = {}) => schemaHook(b, { protocol, options }) ?? null
+
+// the shape suian-zcode-app-mcp's send_message sends (zod .refine() output)
+const suianTool = {
+  name: "send_message",
+  input_schema: {
+    type: "object",
+    properties: { message: { type: "string" }, message_file: { type: "string" } },
+    required: ["message", "ghost_name"],
+    $schema: "http://json-schema.org/draft-07/schema#",
+    additionalProperties: false,
+    oneOf: [{ required: ["message"] }, { required: ["message_file"] }],
+  },
+}
+let mr = mw({ model: "m", tools: [suianTool] })
+eq("mw strips top-level oneOf", "oneOf" in mr.tools[0].input_schema, false)
+eq("mw keeps properties", Object.keys(mr.tools[0].input_schema.properties), ["message", "message_file"])
+eq("mw drops dangling required", mr.tools[0].input_schema.required, ["message"])
+eq("mw keeps unrelated keys", mr.tools[0].input_schema.$schema, "http://json-schema.org/draft-07/schema#")
+
+// a schema that is nothing but a union: rebuild object + merged properties
+const bareUnion = { name: "probe", input_schema: { oneOf: [{ type: "object", properties: { a: { type: "string" } } }, { type: "object", properties: { b: { type: "string" } } }] } }
+mr = mw({ model: "m", tools: [bareUnion] })
+eq("mw merges union properties", Object.keys(mr.tools[0].input_schema.properties), ["a", "b"])
+eq("mw adds object type", mr.tools[0].input_schema.type, "object")
+
+// empty schema gets the minimum Anthropic requires
+mr = mw({ model: "m", tools: [{ name: "z", input_schema: {} }] })
+eq("mw fills a bare schema", [mr.tools[0].input_schema.type, mr.tools[0].input_schema.properties], ["object", {}])
+
+// untouched when already clean, or out of scope
+const clean = { model: "m", tools: [{ name: "x", input_schema: { type: "object", properties: { a: { type: "string" } } } }] }
+eq("mw leaves clean schemas alone", mw(clean), null)
+eq("mw skips responses wire", mw({ model: "m", tools: [suianTool] }, "responses"), null)
+eq("mw skips chat wire", mw({ model: "m", tools: [suianTool] }, "chat"), null)
+eq("mw skips requests without tools", mw({ model: "m" }), null)
+eq("mw honors disable option", mw({ model: "m", tools: [suianTool] }, "anthropic", { disable: true }), null)
+
+// nested unions are legal for Anthropic and must survive
+const nested = { name: "n", input_schema: { type: "object", properties: { p: { oneOf: [{ type: "string" }, { type: "number" }] } } } }
+const nestedBody = { model: "m", tools: [nested] }
+eq("mw keeps nested unions", mw(nestedBody), null)
+eq("mw nested union intact", JSON.stringify(nested.input_schema.properties.p.oneOf.length), "2")
 
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)

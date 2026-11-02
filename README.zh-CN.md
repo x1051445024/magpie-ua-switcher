@@ -138,3 +138,21 @@ MIT — 见 [LICENSE](LICENSE)。
 配置里设 `"diagnose": true` 并重载插件后，每个带工具的请求都会检查一次工具定义，把 Anthropic 会拒绝的项写进 `~/.config/magpie/ua-switcher-tools.json`（顶层 `oneOf`/`allOf`/`anyOf`，或缺少顶层 `type`）。只读，不改请求。
 
 Anthropic 的 Messages API 不接受工具 `input_schema` 顶层的 `oneOf`/`allOf`/`anyOf`；有些 MCP 工具用 zod 的 `.refine()` 表达互斥参数，转成 JSON Schema 后正好落在顶层，于是只有真 Anthropic 端会报 `input_schema does not support oneOf, allOf, or anyOf at the top level`，而 GLM 等兼容层不校验。用这个诊断能直接定位是哪个工具。
+
+## 工具 schema 兼容层（gateway middleware）
+
+`schema.middleware.mjs` 经 `package.json` 的 `magpie.middleware` 由 magpie 主进程加载（moejs，非插件宿主），对 **anthropic 协议**的请求清洗每个工具 `input_schema` 的**顶层**：
+
+- 删除顶层 `oneOf` / `allOf` / `anyOf`（真 Anthropic 端点会拒绝；GLM 等兼容层不校验，所以此前只在 Claude 线路暴露）
+- 顶层缺 `type` 补 `"object"`，缺 `properties` 补 `{}`
+- `required` 里引用了不存在属性的名字会被剔除
+
+嵌套的 `oneOf` 是合法的，保持原样；不需要清洗的请求原样转发（字节不变）。若某个工具 schema 本身就只有一个 union，会把各分支的 `properties` 合并成对象。
+
+**关闭**：moejs 沙箱读不到配置文件，因此没有网页开关，用选项关闭：
+
+```bash
+magpie plugin options github:x1051445024/magpie-ua-switcher '{"disable":true}'
+```
+
+关闭后需 `plugin off` / `plugin on`（或重启 magpie）才进已加载的 middleware。

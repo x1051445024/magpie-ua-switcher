@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0 — 2026-11-02
+
+**工具 schema 兼容层 / Tool-schema compatibility**
+
+- 新增 gateway middleware `schema.middleware.mjs`（`package.json` 的 `magpie.middleware`）：对 Anthropic 协议的请求，清洗每个工具 `input_schema` 的**顶层**——删除顶层 `oneOf`/`allOf`/`anyOf`、补齐 `type: "object"` 与 `properties`、剔除 `required` 里不存在的属性名。
+  New gateway middleware: cleans the **top level** of each tool's `input_schema` on anthropic requests — drops top-level `oneOf`/`allOf`/`anyOf`, fills `type: "object"` and `properties`, and removes `required` names with no property.
+- 背景：有些 MCP 工具用 zod 的 `.refine()` 表达互斥参数，转成 JSON Schema 后落在顶层，真 Anthropic 端点会回 `input_schema does not support oneOf, allOf, or anyOf at the top level`（GLM 等兼容层不校验，所以此前只在 Claude 线路暴露）。middleware 只在 magpie 层处理，对任何客户端生效，也不受第三方插件升级影响。
+  MCP tools that express mutual exclusion with zod's `.refine()` land that union at the schema's top level, which a real Anthropic endpoint rejects. Fixing it in magpie covers every client and survives plugin upgrades.
+- 只动顶层：嵌套的 `oneOf` 是合法的，保持原样；未改动的工具与无 tools 的请求原样转发（返回 undefined，字节不变）。
+  Top level only — nested unions are legal and untouched; clean requests pass through byte-identical.
+- 逃生阀：`magpie plugin options <spec> '{"disable":true}'` 可关闭（moejs 沙箱读不到配置文件，所以没有网页开关）。
+  Escape hatch: `magpie plugin options <spec> '{"disable":true}'` (the moejs sandbox cannot read the config file, so there is no web toggle).
+- selftest 断言 111 项；同时把两项依赖本机 Antigravity 安装版本号的断言改为形状断言。
+  Selftest now 111 assertions; two environment-coupled antigravity assertions became shape checks.
+
 ## 1.5.0 — 2026-11-02
 
 **补齐 Claude Code 请求特征：metadata.user_id / Completing the Claude Code identity**
