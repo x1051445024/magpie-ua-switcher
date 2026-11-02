@@ -12,56 +12,94 @@
 
 import crypto from "node:crypto"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
-
-const MAGPIE_DIR = path.join(os.homedir(), ".config", "magpie")
-const CONFIG_PATH = process.env.UA_SWITCHER_CONFIG || path.join(MAGPIE_DIR, "ua-switcher.json")
-const PROVIDERS_PATH = process.env.UA_SWITCHER_PROVIDERS || path.join(MAGPIE_DIR, "providers.json")
-const USERID_PATH = CONFIG_PATH.replace(/\.json$/, "") + "-userid.json"
+import { configPath, providersPath, toolsLogPath, useridPath } from "./paths.mjs"
 
 // profiles whose anthropic form is Claude Code's identity
 const CLAUDE_CODE_PROFILES = new Set(["claude-code", "pi"])
 
-const USER_ID_RE = /^user_[0-9a-f]{32,128}_account_/
+const USER_ID_RE = /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/i
+const BASE_ID_RE = /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}$/i
+const STAT_TTL_MS = 300
+const SESSION_TTL_MS = 4 * 3600 * 1000
 
-let cfgCache = { mtime: -1, cfg: null }
-let idsCache = { mtime: -1, ids: [] }
-let memoUserId = ""
+let cfgCache = { path: "", mtime: -1, checkedAt: 0, cfg: null }
+let idsCache = { path: "", mtime: -1, checkedAt: 0, ids: [] }
+let memoUserIdPath = ""
+let memoBaseId = ""
+let memoSessionId = ""
+let sessionCreatedAt = 0
+
+function safeRenameSync(tmp, target) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      fs.renameSync(tmp, target)
+      return
+    } catch (e) {
+      if (i === 2 || (e?.code !== "EPERM" && e?.code !== "EACCES" && e?.code !== "EBUSY")) {
+        try {
+          fs.copyFileSync(tmp, target)
+          try { fs.unlinkSync(tmp) } catch {}
+          return
+        } catch {}
+        try { fs.unlinkSync(tmp) } catch {}
+        throw e
+      }
+    }
+  }
+}
+
+function canUseTtl() {
+  return !process.env.UA_SWITCHER_CONFIG && !process.env.UA_SWITCHER_PROVIDERS
+}
 
 function loadCfg() {
+  const file = configPath()
+  const now = Date.now()
+  if (file === cfgCache.path && cfgCache.cfg && canUseTtl() && now - cfgCache.checkedAt < STAT_TTL_MS) {
+    return cfgCache.cfg
+  }
   let st
   try {
-    st = fs.statSync(CONFIG_PATH)
+    st = fs.statSync(file)
   } catch {
+    cfgCache = { path: file, mtime: -1, checkedAt: now, cfg: null }
     return null
   }
-  if (st.mtimeMs === cfgCache.mtime) return cfgCache.cfg
+  cfgCache.checkedAt = now
+  if (file === cfgCache.path && st.mtimeMs === cfgCache.mtime) return cfgCache.cfg
   let cfg = {}
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"))
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"))
     if (raw && typeof raw === "object" && !Array.isArray(raw)) cfg = raw
   } catch {}
-  cfgCache = { mtime: st.mtimeMs, cfg }
+  cfgCache = { path: file, mtime: st.mtimeMs, checkedAt: now, cfg }
   return cfg
 }
 
 // provider ids from providers.json, to tell a "provider/model" request model
 // apart from a routing group's name (group/..., auto/...).
 function providerIds() {
+  const file = providersPath()
+  const now = Date.now()
+  if (file === idsCache.path && idsCache.mtime !== -1 && canUseTtl() && now - idsCache.checkedAt < STAT_TTL_MS) {
+    return idsCache.ids
+  }
   let st
   try {
-    st = fs.statSync(PROVIDERS_PATH)
+    st = fs.statSync(file)
   } catch {
+    idsCache = { path: file, mtime: -1, checkedAt: now, ids: [] }
     return []
   }
-  if (st.mtimeMs === idsCache.mtime) return idsCache.ids
+  idsCache.checkedAt = now
+  if (file === idsCache.path && st.mtimeMs === idsCache.mtime) return idsCache.ids
   const ids = []
   try {
-    const j = JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf8"))
+    const j = JSON.parse(fs.readFileSync(file, "utf8"))
     for (const p of j?.providers ?? []) if (p && typeof p.id === "string") ids.push(p.id)
   } catch {}
-  idsCache = { mtime: st.mtimeMs, ids }
+  idsCache = { path: file, mtime: st.mtimeMs, checkedAt: now, ids }
   return ids
 }
 
@@ -73,26 +111,40 @@ function providerOf(model) {
   return providerIds().includes(head) ? head : ""
 }
 
-// One stable id per installation, so an upstream sees the same "user" across
-// requests and restarts instead of a new account every turn.
+// Persistent device+account identity across restarts, paired with a session
+// UUID that stays stable within a session window (4h) and rotates across boots.
 function userId() {
-  if (memoUserId) return memoUserId
-  try {
-    const j = JSON.parse(fs.readFileSync(USERID_PATH, "utf8"))
-    if (typeof j?.user_id === "string" && USER_ID_RE.test(j.user_id)) {
-      memoUserId = j.user_id
-      return memoUserId
+  const file = useridPath()
+  if (file !== memoUserIdPath) {
+    memoUserIdPath = file
+    memoBaseId = ""
+  }
+  const now = Date.now()
+  if (!memoSessionId || now - sessionCreatedAt > SESSION_TTL_MS) {
+    memoSessionId = crypto.randomUUID()
+    sessionCreatedAt = now
+  }
+  if (!memoBaseId) {
+    try {
+      const j = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (typeof j?.base_id === "string" && BASE_ID_RE.test(j.base_id)) {
+        memoBaseId = j.base_id
+      } else if (typeof j?.user_id === "string" && USER_ID_RE.test(j.user_id)) {
+        memoBaseId = j.user_id.replace(/_session_[0-9a-f-]{36}$/i, "")
+      }
+    } catch {}
+    if (!memoBaseId) {
+      memoBaseId = `user_${crypto.randomBytes(32).toString("hex")}_account_${crypto.randomUUID()}`
     }
-  } catch {}
-  const id = `user_${crypto.randomBytes(32).toString("hex")}_account_${crypto.randomUUID()}_session_${crypto.randomUUID()}`
-  memoUserId = id
-  try {
-    fs.mkdirSync(path.dirname(USERID_PATH), { recursive: true })
-    const tmp = `${USERID_PATH}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify({ user_id: id }, null, 2) + "\n")
-    fs.renameSync(tmp, USERID_PATH)
-  } catch {}
-  return id
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const tmp = `${file}.${process.pid}.tmp`
+      const fullId = `${memoBaseId}_session_${memoSessionId}`
+      fs.writeFileSync(tmp, JSON.stringify({ base_id: memoBaseId, user_id: fullId }, null, 2) + "\n", { mode: 0o600 })
+      safeRenameSync(tmp, file)
+    } catch {}
+  }
+  return `${memoBaseId}_session_${memoSessionId}`
 }
 
 // diagnose (config "diagnose": true): record which tool schemas the client
@@ -126,14 +178,16 @@ function diagnose(body, ctx) {
       names: Array.isArray(tools) ? tools.map((t) => t?.name ?? "") : [],
       odd: oddSchemas(tools),
     }
-    const f = CONFIG_PATH.replace(/\.json$/, "") + "-tools.json"
+    const f = toolsLogPath()
     let all = []
     try {
       const prev = JSON.parse(fs.readFileSync(f, "utf8"))
       if (Array.isArray(prev)) all = prev
     } catch {}
     all.push(report)
-    fs.writeFileSync(f, JSON.stringify(all.slice(-20), null, 2) + "\n")
+    const tmp = `${f}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(all.slice(-20), null, 2) + "\n", { mode: 0o600 })
+    safeRenameSync(tmp, f)
   } catch {}
 }
 

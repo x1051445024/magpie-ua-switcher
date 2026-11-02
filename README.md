@@ -58,7 +58,7 @@ curl -X POST http://127.0.0.1:3426/config -H "content-type: application/json" \
   -d '{"excludeProviders":["zcode"],"versions":{"codex":"0.170.0"}}'  # scripted edits
 ```
 
-**Config file**: edit `~/.config/magpie/ua-switcher.json`; the next request through the gateway picks it up.
+**Config file**: edit `~/.config/magpie/ua-switcher.json` (`/config/magpie/ua-switcher.json` in magpie's Docker image; see [Where the files are](#where-the-files-are)); the next request through the gateway picks it up.
 
 ## Built-in profiles
 
@@ -103,6 +103,15 @@ The OS segment of codex/pi/antigravity UAs is generated from the machine the plu
 - `injectMetadata` — default true. Fill `metadata.user_id` on anthropic requests for the Claude Code profiles (the gateway hook); off means the body is never touched.
 - `profiles` — custom profiles, merged over the built-ins. Single form: `{ "label", "ua", "headers": { "any": {}, "anthropic": {}, "openai": {} } }`; per-protocol forms: `forms: { anthropic, openai, default }`.
 - `applied` — internal bookkeeping of keys the plugin wrote into `providers.json`; don't edit by hand.
+
+### Where the files are
+
+The plugin reads `providers.json` and keeps `ua-switcher.json` (and its `-versions` / `-userid` siblings) in magpie's own folder, the one magpie itself uses: the folder magpie hands the plugin (portable magpie included), else `$XDG_CONFIG_HOME/magpie` when that is an absolute path, else `~/.config/magpie`. In magpie's Docker image that is `/config/magpie` (the image sets `XDG_CONFIG_HOME=/config`, `HOME=/config/home`). Files an older version left in `~/.config/magpie` are copied over once. The web page and `/state` (`providersPath`, `providersError`) show which `providers.json` is read and why it couldn't be.
+
+To point elsewhere, set these in magpie's environment (`docker run -e …` for the container):
+
+- `UA_SWITCHER_PROVIDERS` — the `providers.json` to read and rewrite.
+- `UA_SWITCHER_CONFIG` — the plugin's own `ua-switcher.json`.
 
 ## Self-check
 
@@ -158,3 +167,9 @@ magpie plugin options github:x1051445024/magpie-ua-switcher '{"disable":true}'
 ```
 
 Then `plugin off` / `plugin on` (or restart magpie) so the loaded middleware picks it up.
+
+## Acknowledgements & Contributors
+
+Special thanks to our community contributors for their great work:
+- [@bearchild233](https://github.com/bearchild233) (Yu Xiaoxiang): Submitted [PR #1](https://github.com/x1051445024/magpie-ua-switcher/pull/1), identifying and fixing config directory resolution across Docker, XDG, and portable environments, symlink & file permission preservation, and port watchdog self-healing.
+

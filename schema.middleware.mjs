@@ -17,17 +17,41 @@ function isObject(v) {
   return !!v && typeof v === "object" && !Array.isArray(v)
 }
 
-// mergeProperties gathers the branches' properties (first wins) for a schema
-// that was nothing but a union.
-function mergeProperties(branches) {
-  const out = {}
+// mergePropertyDefs reconciles two schema definitions for the same property name.
+// If identical, keeps the first; if different, wraps in a property-level anyOf
+// (which Anthropic's validator explicitly permits inside properties.<key>).
+function mergePropertyDefs(existing, incoming) {
+  if (!isObject(existing) || !isObject(incoming)) return existing
+  let same = false
+  try {
+    same = JSON.stringify(existing) === JSON.stringify(incoming)
+  } catch {}
+  if (same) return existing
+  if (Array.isArray(existing.anyOf)) {
+    const incStr = JSON.stringify(incoming)
+    for (let i = 0; i < existing.anyOf.length; i++) {
+      if (JSON.stringify(existing.anyOf[i]) === incStr) return existing
+    }
+    return { anyOf: existing.anyOf.concat([incoming]) }
+  }
+  return { anyOf: [existing, incoming] }
+}
+
+// mergeProperties gathers properties across base schema and all union branches.
+function mergeProperties(baseProps, branches) {
+  const out = isObject(baseProps) ? { ...baseProps } : {}
   for (let i = 0; i < branches.length; i++) {
     const b = branches[i]
     if (!isObject(b) || !isObject(b.properties)) continue
     const keys = Object.keys(b.properties)
     for (let k = 0; k < keys.length; k++) {
       const name = keys[k]
-      if (!Object.prototype.hasOwnProperty.call(out, name)) out[name] = b.properties[name]
+      const propDef = b.properties[name]
+      if (!Object.prototype.hasOwnProperty.call(out, name)) {
+        out[name] = propDef
+      } else {
+        out[name] = mergePropertyDefs(out[name], propDef)
+      }
     }
   }
   return out
@@ -41,20 +65,35 @@ function fixTool(tool) {
   let changed = false
 
   let branches = []
+  let allOfBranches = []
   for (let i = 0; i < UNIONS.length; i++) {
     const key = UNIONS[i]
     if (Array.isArray(schema[key])) {
+      if (key === "allOf") allOfBranches = allOfBranches.concat(schema[key])
       branches = branches.concat(schema[key])
       delete schema[key]
       changed = true
     }
   }
 
-  if (!isObject(schema.properties) && branches.length) {
-    const merged = mergeProperties(branches)
-    if (Object.keys(merged).length) {
+  if (branches.length) {
+    const merged = mergeProperties(schema.properties, branches)
+    if (Object.keys(merged).length || !isObject(schema.properties)) {
       schema.properties = merged
       changed = true
+    }
+    // Merge required fields from allOf branches if present
+    if (allOfBranches.length) {
+      const reqSet = Array.isArray(schema.required) ? schema.required.slice() : []
+      for (let i = 0; i < allOfBranches.length; i++) {
+        const bReq = allOfBranches[i] && allOfBranches[i].required
+        if (Array.isArray(bReq)) {
+          for (let r = 0; r < bReq.length; r++) {
+            if (typeof bReq[r] === "string" && reqSet.indexOf(bReq[r]) === -1) reqSet.push(bReq[r])
+          }
+        }
+      }
+      if (reqSet.length) schema.required = reqSet
     }
   }
 
@@ -69,7 +108,9 @@ function fixTool(tool) {
 
   // a required name with no property behind it is rejected too
   if (Array.isArray(schema.required)) {
-    const kept = schema.required.filter((name) => Object.prototype.hasOwnProperty.call(schema.properties, name))
+    const kept = schema.required.filter(
+      (name) => typeof name === "string" && Object.prototype.hasOwnProperty.call(schema.properties, name)
+    )
     if (kept.length !== schema.required.length) {
       changed = true
       if (kept.length) schema.required = kept
@@ -85,16 +126,18 @@ function fixTool(tool) {
 }
 
 export function onRequest(body, ctx) {
-  if (!isObject(body)) return
-  if (!ctx || ctx.protocol !== "anthropic") return
-  // escape hatch, set through `magpie plugin options`; moejs cannot read files
-  if (isObject(ctx.options) && ctx.options.disable === true) return
-  if (!Array.isArray(body.tools)) return
-
-  let changed = false
-  for (let i = 0; i < body.tools.length; i++) {
-    if (fixTool(body.tools[i])) changed = true
+  try {
+    if (!isObject(body)) return
+    if (!ctx || ctx.protocol !== "anthropic") return
+    // escape hatch, set through `magpie plugin options`; moejs cannot read files
+    if (isObject(ctx.options) && ctx.options.disable === true) return
+    if (!Array.isArray(body.tools)) return
+    let changed = false
+    for (let i = 0; i < body.tools.length; i++) {
+      if (fixTool(body.tools[i])) changed = true
+    }
+    if (changed) return body
+  } catch {
+    return
   }
-  if (!changed) return
-  return body // must return: undefined would discard the fix
 }

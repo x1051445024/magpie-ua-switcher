@@ -15,10 +15,46 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomBytes } from "node:crypto"
+import {
+  adoptLegacy,
+  besideConfig,
+  configPath,
+  magpieDir,
+  providersPath,
+  useMagpieDir,
+  versionsPath,
+  zcodeMidPath,
+} from "./paths.mjs"
 
-const MAGPIE_DIR = path.join(os.homedir(), ".config", "magpie")
-const CONFIG_PATH = process.env.UA_SWITCHER_CONFIG || path.join(MAGPIE_DIR, "ua-switcher.json")
-const PROVIDERS_PATH = process.env.UA_SWITCHER_PROVIDERS || path.join(MAGPIE_DIR, "providers.json")
+let CONFIG_PATH = configPath()
+let PROVIDERS_PATH = providersPath()
+let VERSIONS_PATH = versionsPath()
+let ZCODE_DEVICE_MID_PATH = zcodeMidPath()
+
+let cache = { mtime: -1, cfg: null }
+let versionsCache = { mtime: -1, data: null }
+let zcodeMidCache = { checkedAt: 0, mid: "" }
+let lastAppliedMtime = -1
+let lastProvidersMtime = -1
+
+function refreshPaths() {
+  const nextCfg = configPath()
+  const nextProv = providersPath()
+  const nextVer = versionsPath()
+  const nextMid = zcodeMidPath()
+  if (nextCfg !== CONFIG_PATH || nextProv !== PROVIDERS_PATH || nextVer !== VERSIONS_PATH || nextMid !== ZCODE_DEVICE_MID_PATH) {
+    CONFIG_PATH = nextCfg
+    PROVIDERS_PATH = nextProv
+    VERSIONS_PATH = nextVer
+    ZCODE_DEVICE_MID_PATH = nextMid
+    cache = { mtime: -1, cfg: DEFAULTS }
+    versionsCache = { mtime: -1, data: null }
+    zcodeMidCache = { checkedAt: 0, mid: "" }
+    lastAppliedMtime = -1
+    lastProvidersMtime = -1
+  }
+}
+
 const DEFAULT_PORT = 3426
 
 // Client versions the UA strings name. Built-ins are the floor; codex /
@@ -44,7 +80,6 @@ const NPM_PACKAGES = {
   "claude-code": "@anthropic-ai/claude-code",
 }
 const REGISTRIES = ["https://registry.npmjs.org", "https://registry.npmmirror.com"]
-const VERSIONS_PATH = CONFIG_PATH.replace(/\.json$/, "") + "-versions.json"
 
 // codex and pi build their UA's OS segment from the machine they run on, so
 // the switcher does the same instead of naming one fixed machine. codex is
@@ -79,7 +114,23 @@ const ANTIGRAVITY_PLATFORM = `os_type=${ANTI_OS}; arch=${ANTI_ARCH}`
 const OS_TYPE = { Windows_NT: "Windows", Darwin: "macOS", Linux: "Linux" }[os.type()] ?? os.type()
 const RUST_ARCH = { x64: "x86_64", arm64: "aarch64", ia32: "x86" }[process.arch] ?? process.arch
 const CODEX_OS_SEG = `${OS_TYPE} ${os.release()}; ${RUST_ARCH}`
-const TERMINAL = os.platform() === "win32" ? "WindowsTerminal" : "unknown"
+const STAINLESS_OS = { win32: "Windows", darwin: "MacOS", linux: "Linux" }[os.platform()] ?? "Linux"
+const STAINLESS_ARCH = { x64: "x64", arm64: "arm64", ia32: "x86" }[os.arch()] ?? os.arch()
+const TERMINAL =
+  process.env.TERM_PROGRAM ||
+  (process.env.WT_SESSION ? "WindowsTerminal" : os.platform() === "win32" ? "WindowsTerminal" : "xterm-256color")
+
+function getZcodeDeviceMid() {
+  const now = Date.now()
+  if (now - zcodeMidCache.checkedAt < 10_000) return zcodeMidCache.mid
+  zcodeMidCache.checkedAt = now
+  try {
+    zcodeMidCache.mid = fs.readFileSync(zcodeMidPath(), "utf8").trim()
+  } catch {
+    zcodeMidCache.mid = ""
+  }
+  return zcodeMidCache.mid
+}
 
 // Header sets matching the real clients. Built per call from the effective
 // versions, so a background version refresh changes the UA without a reload.
@@ -104,10 +155,10 @@ function builtinProfiles(V) {
             "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20",
           "X-Stainless-Lang": "js",
           "X-Stainless-Package-Version": "0.112.1",
-          "X-Stainless-Os": "Windows",
-          "X-Stainless-Arch": "x64",
+          "X-Stainless-Os": STAINLESS_OS,
+          "X-Stainless-Arch": STAINLESS_ARCH,
           "X-Stainless-Runtime": "node",
-          "X-Stainless-Runtime-Version": "v26.3.0",
+          "X-Stainless-Runtime-Version": "v22.14.0",
         },
       },
     },
@@ -117,10 +168,11 @@ function builtinProfiles(V) {
       label: "pi（按协议自动）",
       forms: {
         anthropic: {
-          ua: "claude-cli/2.1.75",
+          ua: `claude-cli/${V.pi}`,
           headers: {
             any: { "x-app": "cli" },
             anthropic: {
+              "anthropic-version": "2023-06-01",
               "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
               "anthropic-dangerous-direct-browser-access": "true",
             },
@@ -174,17 +226,15 @@ function builtinProfiles(V) {
           "X-Title": "Z Code@cli",
           "X-Release-Channel": "production",
           "X-ZCode-Agent": "glm",
-          "X-Platform": "win32-x64",
-          "X-Os-Category": "windows",
+          "X-Platform": `${os.platform()}-${os.arch()}`,
+          "X-Os-Category": ANTI_OS,
         },
       },
     },
   }
   // The real device id magpie's zcode-auth uses, when present.
-  try {
-    const mid = fs.readFileSync(path.join(MAGPIE_DIR, "zcode-device-mid"), "utf8").trim()
-    if (mid) profiles.zcode.headers.anthropic["X-Device-Mid"] = mid
-  } catch {}
+  const mid = getZcodeDeviceMid()
+  if (mid) profiles.zcode.headers.anthropic["X-Device-Mid"] = mid
   return profiles
 }
 
@@ -193,17 +243,60 @@ const DEFAULTS = {
   excludeProviders: ["zcode"],
   providerOverrides: {},
   port: DEFAULT_PORT,
-  log: "change", // always | change | off
+  log: "change",
   profiles: {},
-  versions: {}, // hand pins, e.g. {"codex":"0.170.0"} — beat fetched values
-  autoVersions: true, // refresh codex/claude-code/aiSdk from npm in the background
+  versions: {},
+  selfcheck: false,
+  applied: {},
+  autoVersions: true,
   updateEveryHours: 24,
   registry: null, // extra npm registry tried first, e.g. https://registry.npmmirror.com
 }
 
 // ---- config -----------------------------------------------------------------
 
-let cache = { mtime: -1, cfg: DEFAULTS }
+let reqNonce = 0
+
+function safeWriteJsonSync(targetPath, dataObj, defaultMode = 0o600) {
+  let target = targetPath
+  try {
+    target = fs.realpathSync(targetPath)
+  } catch {}
+  let mode = defaultMode
+  try {
+    const st = fs.statSync(target)
+    if (st.mode & 0o777) mode = st.mode & 0o777
+  } catch {}
+
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  const tmp = `${target}.${process.pid}.${++reqNonce}.tmp`
+  const content = JSON.stringify(dataObj, null, 2) + "\n"
+  try {
+    fs.writeFileSync(tmp, content, { encoding: "utf8", mode })
+    try {
+      fs.chmodSync(tmp, mode)
+    } catch {}
+    for (let i = 0; i < 3; i++) {
+      try {
+        fs.renameSync(tmp, target)
+        return
+      } catch (e) {
+        if (i === 2 || (e?.code !== "EPERM" && e?.code !== "EACCES" && e?.code !== "EBUSY")) {
+          try {
+            fs.copyFileSync(tmp, target)
+            try { fs.chmodSync(target, mode) } catch {}
+            return
+          } catch {}
+          throw e
+        }
+      }
+    }
+  } finally {
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp)
+    } catch {}
+  }
+}
 
 function normalize(raw) {
   const c = { ...DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) }
@@ -229,6 +322,7 @@ function normalize(raw) {
 }
 
 function loadCfg() {
+  refreshPaths()
   let st
   try {
     st = fs.statSync(CONFIG_PATH)
@@ -249,20 +343,17 @@ function loadCfg() {
 
 function saveCfg(patch) {
   const next = normalize({ ...loadCfg(), ...patch })
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
-  const tmp = `${CONFIG_PATH}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n")
-  fs.renameSync(tmp, CONFIG_PATH)
+  safeWriteJsonSync(CONFIG_PATH, next)
   cache = { mtime: fs.statSync(CONFIG_PATH).mtimeMs, cfg: next }
   return next
 }
 
 // ---- versions -------------------------------------------------------------------
 
-let versionsCache = { mtime: -1, data: null }
-const VERSION_RE = /^\d+\.\d+\.\d+/
+const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,24})?$/
 
 function loadFetchedVersions() {
+  refreshPaths()
   try {
     const st = fs.statSync(VERSIONS_PATH)
     if (st.mtimeMs === versionsCache.mtime) return versionsCache.data
@@ -278,12 +369,10 @@ function loadFetchedVersions() {
 }
 
 function saveFetchedVersions(versions) {
+  refreshPaths()
   const data = { fetched: Date.now(), versions }
   try {
-    fs.mkdirSync(path.dirname(VERSIONS_PATH), { recursive: true })
-    const tmp = `${VERSIONS_PATH}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n")
-    fs.renameSync(tmp, VERSIONS_PATH)
+    safeWriteJsonSync(VERSIONS_PATH, data)
     versionsCache = { mtime: fs.statSync(VERSIONS_PATH).mtimeMs, data }
   } catch (e) {
     note(`cannot write ${path.basename(VERSIONS_PATH)}: ${e?.message ?? e}`, "error")
@@ -317,11 +406,12 @@ export function readAsarPackageVersion(asarPath) {
   try {
     fd = fs.openSync(asarPath, "r")
     const hdr = Buffer.alloc(16)
-    fs.readSync(fd, hdr, 0, 16, 0)
+    if (fs.readSync(fd, hdr, 0, 16, 0) !== 16) return null
     const headerSize = hdr.readUInt32LE(4)
     let jsonLen = hdr.readUInt32LE(12)
     let jsonOff = 16
     const sane = (n) => n > 1 && n < 64 * 1024 * 1024
+    if (!sane(headerSize)) return null
     if (!sane(jsonLen)) {
       // older asar layout: length sits at offset 8, JSON starts at 12
       jsonLen = hdr.readUInt32LE(8)
@@ -329,14 +419,25 @@ export function readAsarPackageVersion(asarPath) {
       if (!sane(jsonLen)) return null
     }
     const raw = Buffer.alloc(jsonLen)
-    fs.readSync(fd, raw, 0, jsonLen, jsonOff)
+    if (fs.readSync(fd, raw, 0, jsonLen, jsonOff) !== jsonLen) return null
     const header = JSON.parse(raw.toString("utf8"))
     const entry = header?.files?.["package.json"]
-    if (!entry || typeof entry.offset !== "string" || !Number.isFinite(Number(entry.size))) return null
+    const entrySize = Number(entry?.size)
+    const entryOffset = Number(entry?.offset)
+    if (
+      !entry ||
+      typeof entry.offset !== "string" ||
+      !Number.isFinite(entrySize) ||
+      entrySize <= 0 ||
+      entrySize > 1024 * 1024 ||
+      !Number.isFinite(entryOffset) ||
+      entryOffset < 0
+    )
+      return null
     let base = 8 + headerSize
     if (base % 4) base += 4 - (base % 4)
-    const data = Buffer.alloc(Number(entry.size))
-    fs.readSync(fd, data, 0, data.length, base + Number(entry.offset))
+    const data = Buffer.alloc(entrySize)
+    fs.readSync(fd, data, 0, data.length, base + entryOffset)
     const pkg = JSON.parse(data.toString("utf8"))
     if (typeof pkg?.version === "string" && VERSION_RE.test(pkg.version)) return pkg.version
     return null
@@ -364,55 +465,48 @@ function detectAntigravityVersion() {
       if (detectedCache.path === p && detectedCache.mtime === st.mtimeMs) return detectedCache.version
       const v = readAsarPackageVersion(p)
       detectedCache = { path: p, mtime: st.mtimeMs, version: v }
-      return v
+      if (v) return v
     } catch {}
   }
   return null
 }
 
-let fetching = false
-// Pull the latest npm versions for the clients that publish there. Cached in
-// VERSIONS_PATH; on change the native providers are rewritten with the new UA
-// right away. Never throws — a failed fetch keeps the last known versions.
+// ---- auto-update from npm -------------------------------------------------------
+
 async function fetchLatestVersions(force = false) {
   const cfg = loadCfg()
-  if (!cfg.autoVersions && !force) return { ok: false, skipped: "autoVersions off" }
+  if (!cfg.autoVersions && !force) return { ok: false, reason: "disabled" }
   const cache = loadFetchedVersions()
   const everyMs = cfg.updateEveryHours * 3600_000
-  if (!force && Date.now() - cache.fetched < everyMs)
-    return { ok: true, fresh: true, fetchedAt: cache.fetched, versions: cache.versions }
-  if (fetching) return { ok: false, skipped: "a fetch is already running" }
-  fetching = true
-  try {
-    const registries = cfg.registry ? [cfg.registry, ...REGISTRIES] : REGISTRIES
-    const got = {}
-    for (const [key, pkg] of Object.entries(NPM_PACKAGES)) {
-      for (const reg of registries) {
-        try {
-          const r = await fetch(`${reg}/${pkg}/latest`, { signal: AbortSignal.timeout(8000) })
-          if (!r.ok) continue
-          const j = await r.json()
-          if (typeof j?.version === "string" && VERSION_RE.test(j.version)) {
-            got[key] = j.version
-            break
-          }
-        } catch {}
-      }
-    }
-    if (!Object.keys(got).length) return { ok: false, error: "no registry answered" }
-    const merged = { ...cache.versions, ...got }
-    const changed = Object.keys(merged).filter((k) => merged[k] !== cache.versions[k])
-    if (changed.length || !fs.existsSync(VERSIONS_PATH)) saveFetchedVersions(merged)
-    if (changed.length) {
-      note(`client versions updated from npm: ${changed.map((k) => `${k}→${merged[k]}`).join(", ")}`)
+  if (!force && Date.now() - cache.fetched < everyMs) return { ok: true, cached: true }
+
+  const registries = cfg.registry ? [cfg.registry, ...REGISTRIES] : REGISTRIES
+  const got = {}
+  for (const [key, pkg] of Object.entries(NPM_PACKAGES)) {
+    for (const reg of registries) {
       try {
-        providersApply(loadCfg())
+        const r = await fetch(`${reg}/${pkg}/latest`, { signal: AbortSignal.timeout(8000) })
+        if (!r.ok) continue
+        const j = await r.json()
+        const v = typeof j?.version === "string" ? j.version.trim() : ""
+        if (VERSION_RE.test(v)) {
+          got[key] = v
+          break
+        }
       } catch {}
     }
-    return { ok: true, fetchedAt: Date.now(), versions: merged, changed }
-  } finally {
-    fetching = false
   }
+
+  const merged = { ...cache.versions, ...got }
+  saveFetchedVersions(merged)
+  const changed = Object.keys(merged).filter((k) => merged[k] !== cache.versions[k])
+  if (changed.length) {
+    note(`updated client versions from npm: ${changed.map((k) => `${k}=${merged[k]}`).join(", ")}`)
+    try {
+      providersApply(loadCfg())
+    } catch {}
+  }
+  return { ok: true, fetched: got, changed }
 }
 
 function versionState(cfg) {
@@ -422,22 +516,26 @@ function versionState(cfg) {
   const detected = { antigravity: detectAntigravityVersion() }
   const values = {}
   for (const k of Object.keys(DEFAULT_VERSIONS)) {
+    let source = "builtin"
+    if (typeof pins[k] === "string" && pins[k]) source = "pinned"
+    else if (typeof detected[k] === "string" && detected[k]) source = "detected"
+    else if (typeof fetched.versions[k] === "string" && fetched.versions[k]) source = "fetched"
     values[k] = {
       inUse: inUse[k],
-      source: typeof pins[k] === "string" ? "pinned" : detected[k] ? "detected" : fetched.versions[k] ? "fetched" : "builtin",
+      source,
       npm: NPM_PACKAGES[k] ?? null,
-      npmLatest: fetched.versions[k] ?? null,
+      default: DEFAULT_VERSIONS[k],
     }
   }
   return {
     autoVersions: cfg.autoVersions,
     updateEveryHours: cfg.updateEveryHours,
-    fetchedAt: fetched.fetched || null,
+    fetchedAt: fetched.fetched,
     values,
   }
 }
 
-// ---- profile resolution -------------------------------------------------------
+// ---- profile resolution ---------------------------------------------------------
 
 function effectiveProfiles(cfg) {
   const out = { ...builtinProfiles(versionsOf(cfg)) }
@@ -450,33 +548,42 @@ function effectiveProfiles(cfg) {
 }
 
 function formHeaders(h, protocol) {
-  return { ...((h && h.any) ?? {}), ...((h && h[protocol]) ?? {}) }
+  if (!h || typeof h !== "object") return {}
+  const any = h.any && typeof h.any === "object" ? h.any : {}
+  const specific =
+    protocol === "anthropic"
+      ? h.anthropic && typeof h.anthropic === "object"
+        ? h.anthropic
+        : {}
+      : protocol === "openai"
+        ? h.openai && typeof h.openai === "object"
+          ? h.openai
+          : {}
+        : {}
+  return { ...any, ...specific }
 }
 
 function resolveForm(p, protocol) {
   if (!p) return null
-  if (p.forms) {
+  if (p.forms && typeof p.forms === "object") {
     const f = p.forms[protocol] ?? p.forms.default
-    if (!f) return null
+    if (!f || typeof f !== "object" || typeof f.ua !== "string") return null
     return { ua: f.ua, headers: formHeaders(f.headers, protocol) }
   }
+  if (typeof p.ua !== "string") return null
   return { ua: p.ua, headers: formHeaders(p.headers, protocol) }
 }
 
 function protocolOf(msg) {
   const npm = String(msg?.model?.api?.npm ?? msg?.provider?.info?.npm ?? "")
   if (npm.includes("anthropic")) return "anthropic"
-  if (npm.includes("openai") || npm.includes("responses")) return "openai"
+  if (npm.includes("openai")) return "openai"
   return "other"
 }
 
-// ---- native providers (providers.json) ---------------------------------------
-
-// Native providers (API-key entries of providers.json, fetched by magpie's
-// Go side, not the plugin host) take their headers from the entry's headers
-// object, which always wins over the UA magpie would send. The switcher
-// writes the resolved profile there on every switch; the app hot-reloads the
-// file. Only the keys recorded in cfg.applied are ever removed again, so
+// providers.json's wire field: "anthropic" for Messages API, "openai" for
+// responses API endpoints. This picks the right headers group so anthropic
+// headers never leak to OpenAI upstreams and vice versa, even when the same
 // headers the user set themselves survive an "off".
 function wireOf(p) {
   if (p.baseAPI === "responses" || typeof p.responses === "string") return "openai"
@@ -485,10 +592,13 @@ function wireOf(p) {
 }
 
 function providersApply(cfg) {
+  refreshPaths()
   let raw
   try {
     raw = fs.readFileSync(PROVIDERS_PATH, "utf8")
-  } catch {
+  } catch (e) {
+    const error = e?.code === "ENOENT" ? "not found" : String(e?.message ?? e)
+    note(`cannot read ${PROVIDERS_PATH}: ${error}`, "warn")
     return
   }
   let json
@@ -527,9 +637,10 @@ function providersApply(cfg) {
   }
   if (changed) {
     try {
-      const tmp = `${PROVIDERS_PATH}.ua-switcher.tmp`
-      fs.writeFileSync(tmp, JSON.stringify(json, null, 2))
-      fs.renameSync(tmp, PROVIDERS_PATH)
+      safeWriteJsonSync(PROVIDERS_PATH, json)
+      try {
+        lastProvidersMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
+      } catch {}
       note(`rewrote headers of native providers per profile "${cfg.profile}"`)
     } catch (e) {
       note(`cannot write providers.json: ${e?.message ?? e}`, "error")
@@ -537,16 +648,30 @@ function providersApply(cfg) {
     }
   }
   if (JSON.stringify(applied) !== JSON.stringify(cfg.applied ?? {})) saveCfg({ applied })
+  try {
+    lastAppliedMtime = cache.mtime
+    lastProvidersMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
+  } catch {}
 }
 
 // ---- logging ------------------------------------------------------------------
 
 let appLog = null // (message, level) => void via client.app.log RPC; never stdout
 const noted = new Set()
+const recentEvents = [] // { ts: string, level: string, text: string }
+
+function pushEvent(text, level = "info") {
+  recentEvents.push({ ts: new Date().toISOString(), level, text: String(text) })
+  if (recentEvents.length > 60) recentEvents.shift()
+}
 
 function note(message, level = "info", once = true) {
-  if (once && noted.has(message)) return
-  noted.add(message)
+  if (once) {
+    if (noted.has(message)) return
+    if (noted.size > 500) noted.clear()
+    noted.add(message)
+  }
+  pushEvent(message, level)
   try {
     if (appLog) appLog(message, level)
     else console.error(`ua-switcher: ${message}`)
@@ -560,52 +685,56 @@ function note(message, level = "info", once = true) {
 // ---- the hook -------------------------------------------------------------------
 
 const seen = new Map() // providerID -> last applied tag, for log:"change"
-let lastAppliedMtime = -1 // ua-switcher.json mtime providers were last applied for
 
 async function chatHeaders(msg, out) {
-  let cfg
   try {
-    cfg = loadCfg()
-  } catch {
-    return
-  }
-  // watchdog: when no instance of ours holds the switcher port (a deferred-to
-  // sibling died, or the bind kept failing), re-attempt at most once a minute
-  if (server === null && Date.now() - lastBindTry > 60000) {
-    try {
-      bindAttempt()
-    } catch {}
-  }
-  if (cache.mtime !== lastAppliedMtime) {
-    lastAppliedMtime = cache.mtime
-    try {
-      providersApply(cfg)
-    } catch {}
-  }
-  const providerID = String(msg?.message?.model?.providerID ?? msg?.provider?.info?.id ?? "")
-  if (providerID && cfg.excludeProviders.includes(providerID)) return
-  const wanted = cfg.providerOverrides[providerID] || cfg.profile
-  if (!wanted || wanted === "off") {
-    if (cfg.log === "always") note(`${providerID || "?"}: off (magpie default UA)`, "info", false)
-    return
-  }
-  const profile = effectiveProfiles(cfg)[wanted]
-  if (!profile) {
-    note(`unknown profile "${wanted}" — acting as off`, "error")
-    return
-  }
-  const protocol = protocolOf(msg)
-  const form = resolveForm(profile, protocol)
-  if (!form || !form.ua) return
-  out.headers["User-Agent"] = form.ua
-  for (const [k, v] of Object.entries(form.headers || {})) out.headers[k] = String(v)
-  if (cfg.log !== "off") {
-    const tag = `${providerID || "?"} ← ${wanted} [${protocol}]`
-    if (cfg.log === "always" || seen.get(providerID) !== tag) {
-      seen.set(providerID, tag)
-      note(`${tag} ${form.ua}`, "info", false)
+    if (!out || typeof out !== "object") return
+    if (!out.headers || typeof out.headers !== "object") out.headers = {}
+    const cfg = loadCfg()
+    // watchdog: when no instance of ours holds the switcher port (a deferred-to
+    // sibling died, or the bind kept failing), re-attempt at most once every 30s
+    if ((server === null || server === "external") && Date.now() - lastBindTry > 30000) {
+      try {
+        bindAttempt(false)
+      } catch {}
     }
-  }
+    let provMtime = lastProvidersMtime
+    try {
+      provMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
+    } catch {}
+    if (cache.mtime !== lastAppliedMtime || provMtime !== lastProvidersMtime) {
+      lastAppliedMtime = cache.mtime
+      lastProvidersMtime = provMtime
+      try {
+        providersApply(cfg)
+      } catch {}
+    }
+    const providerID = String(msg?.message?.model?.providerID ?? msg?.provider?.info?.id ?? "")
+    if (providerID && cfg.excludeProviders.includes(providerID)) return
+    const wanted = cfg.providerOverrides[providerID] || cfg.profile
+    if (!wanted || wanted === "off") {
+      if (cfg.log === "always") note(`${providerID || "?"}: off (magpie default UA)`, "info", false)
+      return
+    }
+    const profile = effectiveProfiles(cfg)[wanted]
+    if (!profile) {
+      note(`unknown profile "${wanted}" — acting as off`, "error")
+      return
+    }
+    const protocol = protocolOf(msg)
+    const form = resolveForm(profile, protocol)
+    if (!form || !form.ua) return
+    out.headers["User-Agent"] = form.ua
+    for (const [k, v] of Object.entries(form.headers || {})) out.headers[k] = String(v)
+    if (cfg.log !== "off") {
+      const tag = `${providerID || "?"} ← ${wanted} [${protocol}]`
+      if (cfg.log === "always" || seen.get(providerID) !== tag) {
+        if (seen.size > 200) seen.clear()
+        seen.set(providerID, tag)
+        note(`${tag} ${form.ua}`, "info", false)
+      }
+    }
+  } catch {}
 }
 
 // ---- the web switcher -------------------------------------------------------------
@@ -615,8 +744,19 @@ let lastBindTry = 0
 
 // ---- /config validation ----------------------------------------------------------
 
-const ID_RE = /^[A-Za-z0-9._-]{1,40}$/
-const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}$/ // RFC 7230 token, pragmatic
+const ID_RE = /^[A-Za-z0-9_.-]{1,40}$/
+const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+._\x60|^~-]{1,64}$/ // RFC 7230 token, pragmatic (no range between . and ^)
+const CTL_RE = /[\r\n\0]/
+const FORBIDDEN_HEADERS = new Set([
+  "host",
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+])
+const RESERVED_PROFILE_IDS = new Set(["off", "__proto__", "constructor", "prototype"])
 
 function cleanExcludes(v) {
   if (!Array.isArray(v)) throw new Error("excludeProviders 必须是数组")
@@ -645,7 +785,8 @@ function cleanPins(v) {
   for (const [k, val] of Object.entries(v)) {
     if (!Object.prototype.hasOwnProperty.call(DEFAULT_VERSIONS, k)) throw new Error(`未知的版本键：${k}`)
     if (val === "" || val == null) continue // an empty value clears the pin
-    if (typeof val !== "string" || !VERSION_RE.test(val)) throw new Error(`versions.${k} 不是合法版本号：${JSON.stringify(val)}`)
+    if (typeof val !== "string" || !VERSION_RE.test(val) || val.length > 32)
+      throw new Error(`versions.${k} 不是合法版本号：${JSON.stringify(val)}`)
     out[k] = val
   }
   return out
@@ -655,8 +796,10 @@ function cleanHeadersGroup(v, where) {
   const out = {}
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`${where} 必须是对象`)
   for (const [k, val] of Object.entries(v)) {
-    if (!HEADER_KEY_RE.test(k)) throw new Error(`${where} 含非法头字段名：${JSON.stringify(k)}`)
-    if (typeof val !== "string" || !val.length || val.length > 512) throw new Error(`${where}.${k} 的值必须是 1–512 字符`)
+    if (!HEADER_KEY_RE.test(k) || k.includes(":")) throw new Error(`${where} 含非法头字段名：${JSON.stringify(k)}`)
+    if (FORBIDDEN_HEADERS.has(k.toLowerCase())) throw new Error(`${where} 禁止覆盖受保护的请求头：${k}`)
+    if (typeof val !== "string" || !val.length || val.length > 512 || CTL_RE.test(val))
+      throw new Error(`${where}.${k} 的值必须是 1–512 字符且不含控制字符`)
     out[k] = val
   }
   return out
@@ -682,6 +825,7 @@ function cleanProfiles(v) {
   const out = {}
   for (const [id, p] of Object.entries(v)) {
     if (!ID_RE.test(id)) throw new Error(`无效的档案 id：${JSON.stringify(id)}`)
+    if (RESERVED_PROFILE_IDS.has(id.toLowerCase())) throw new Error(`档案 ID "${id}" 为系统保留名称，不可自定义`)
     if (!p || typeof p !== "object") throw new Error(`档案 ${id} 必须是对象`)
     const one = {}
     if (typeof p.label === "string" && p.label.trim()) one.label = p.label.trim().slice(0, 60)
@@ -710,31 +854,58 @@ function cleanProfiles(v) {
 // providersForUi lists what the provider sections of the page offer: every
 // native entry of providers.json plus the plugin-declared zcode provider.
 function providersForUi() {
+  refreshPaths()
   const out = [{ id: "zcode", name: "ZCode（插件 provider）", off: false, wire: "anthropic" }]
+  let error = null
   try {
     const j = JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf8"))
     for (const p of j.providers ?? []) {
       if (p && typeof p === "object" && typeof p.id === "string" && !out.some((q) => q.id === p.id))
         out.push({ id: p.id, name: String(p.name ?? p.id), off: p.off === true, wire: wireOf(p) })
     }
-  } catch {}
-  return out
+  } catch (e) {
+    error = e?.code === "ENOENT" ? "not found" : String(e?.message ?? e)
+    note(`cannot read ${PROVIDERS_PATH}: ${error}`, "warn")
+  }
+  return { list: out, error }
 }
 
 function state() {
   const cfg = loadCfg()
   const profiles = effectiveProfiles(cfg)
+  const resolvedProfiles = {}
+  for (const [id, p] of Object.entries(profiles)) {
+    const anthro = resolveForm(p, "anthropic")
+    const oai = resolveForm(p, "openai")
+    const def = resolveForm(p, "other")
+    resolvedProfiles[id] = {
+      ua: anthro?.ua || oai?.ua || def?.ua || "",
+      isDual: Boolean(p.forms),
+      headers: {
+        any: (p.headers && p.headers.any) || (p.forms && p.forms.default && p.forms.default.headers && p.forms.default.headers.any) || {},
+        anthropic: anthro?.headers || {},
+        openai: oai?.headers || {},
+      },
+    }
+  }
+  const prov = providersForUi()
   return {
     plugin: "ua-switcher",
+    version: "1.7.0",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
     injectMetadata: cfg.injectMetadata !== false,
-    port: server ? server.port : cfg.port,
+    autoVersions: cfg.autoVersions !== false,
+    port: server && typeof server === "object" ? server.port : cfg.port,
     configPath: CONFIG_PATH,
+    providersPath: PROVIDERS_PATH,
+    providers: prov.list,
+    providersError: prov.error,
     versions: versionState(cfg),
     pins: cfg.versions ?? {},
-    providers: providersForUi(),
+    resolvedProfiles,
+    events: recentEvents.slice().reverse(),
     customProfiles: Object.fromEntries(
       Object.entries(cfg.profiles).map(([id, p]) => [
         id,
@@ -754,240 +925,22 @@ function state() {
   }
 }
 
-// The page is a static shell; the script renders everything from /state so
-// the server never builds HTML with user data in it.
+const UI_HTML_PATH = path.join(
+  import.meta.dir || path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")),
+  "ui.html"
+)
+let uiHtmlCache = { mtime: -1, html: "" }
+
 function page() {
-  return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>magpie UA 切换器</title>
-<script>try{var v=localStorage.getItem("ua-switcher-font");if(v)document.documentElement.style.setProperty("--fs",Number(v)+"px")}catch(e){}</script>
-<style>
-:root{color-scheme:dark}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#111418;color:#e8eaed;font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;font-size:var(--fs,clamp(15px,.7vw + 12.5px,18px));line-height:1.6;display:flex;justify-content:center;padding:28px 16px 48px}
-main{width:100%;max-width:720px}
-h1{font-size:clamp(19px,1vw + 16px,24px);margin:0}
-h2{font-size:1.02em;margin:0 0 10px;color:#c7cbd1}
-.sub{color:#9aa0a6;font-size:.8em;margin:2px 0 18px}
-.cur{color:#7ab0ff;font-weight:600}
-.card{border:1px solid #2b3038;border-radius:12px;padding:14px 16px;margin-top:16px;background:#151920}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
-button{font:inherit}
-button.p{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px 14px;border-radius:10px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;cursor:pointer;text-align:left;transition:border-color .15s,background .15s}
-button.p:hover{border-color:#4a5261}
-button.p.on{border-color:#7ab0ff;background:#1d2a3d}
-button.p.on::after{content:"当前生效";font-size:.72em;color:#7ab0ff}
-button.p span{font-size:.95em}
-button.p code{font-size:.72em;color:#9aa0a6}
-.in,select,textarea,input[type=text]{width:100%;padding:7px 10px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;font:inherit;font-size:.9em}
-input[type=range]{accent-color:#7ab0ff;width:190px}
-input[type=number]{width:86px;padding:7px 10px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;font:inherit;font-size:.9em;text-align:center}
-textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:.82em}
-textarea:focus,input:focus,select:focus{outline:none;border-color:#4a5261}
-label{display:block;font-size:.78em;color:#9aa0a6;margin:10px 0 3px}
-.vrow{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:10px;align-items:center;margin:8px 0}
-.vname{font-size:.85em}
-.tag{display:inline-block;font-size:.68em;border:1px solid #31415a;border-radius:999px;padding:0 8px;margin-left:6px;color:#9aa0a6;vertical-align:middle}
-.tag.pin{color:#ffd479;border-color:#6b5a2b}
-.tag.get{color:#7ee2b8;border-color:#2b5a47}
-.btn{padding:6px 14px;border-radius:8px;border:1px solid #2b3038;background:#1a1f26;color:#e8eaed;cursor:pointer;font-size:.85em}
-.btn:hover{border-color:#4a5261}
-.btn.pri{background:#1d2a3d;border-color:#37507a;color:#cfe2ff}
-.btn.pri:hover{border-color:#7ab0ff}
-.btn.mini{padding:2px 9px;font-size:.75em}
-.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
-.chip{display:inline-flex;align-items:center;gap:6px;background:#1d2a3d;border:1px solid #31415a;border-radius:999px;padding:3px 6px 3px 12px;font-size:.82em}
-.chip button{background:none;border:none;color:#9aa0a6;cursor:pointer;font-size:.9em;padding:2px 6px;border-radius:999px}
-.chip button:hover{color:#ff8a80;background:#2a1d22}
-.exrow{display:grid;grid-template-columns:minmax(110px,1fr) minmax(140px,1.4fr);gap:10px;align-items:center;margin:6px 0;font-size:.85em}
-.exrow .off{color:#666}
-.exrow code{color:#9aa0a6;font-size:.85em}
-.plist{margin:4px 0 10px}
-.prow{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #2b3038;border-radius:8px;margin:6px 0;font-size:.88em}
-.prow code{color:#9aa0a6;font-size:.85em;margin-right:auto}
-.err{color:#ff8a80;font-size:.82em;min-height:1.2em;margin-top:8px}
-#status{position:fixed;right:16px;bottom:14px;background:#1d2a3d;border:1px solid #37507a;color:#cfe2ff;border-radius:10px;padding:8px 14px;font-size:.82em;opacity:0;transition:opacity .25s;pointer-events:none;max-width:70vw}
-#status.show{opacity:1}
-#status.err{background:#2a1d22;border-color:#6b2b35;color:#ff8a80}
-.box{margin-top:16px;padding:12px 14px;border:1px solid #2b3038;border-radius:10px;font-size:.78em;color:#9aa0a6}
-.box b{color:#c7cbd1;font-weight:600}
-.box code{background:#22272f;padding:1px 6px;border-radius:4px;color:#c7cbd1}
-.row{margin-top:8px}
-</style></head><body><main>
-<h1>magpie UA 切换器</h1>
-<div class="sub">切换 magpie 发往上游的 User-Agent，所有改动即时生效，无需重启</div>
-
-<div class="card">
-<h2>档案 · 当前 <span class="cur" id="cur"></span></h2>
-<div class="grid" id="grid"></div>
-</div>
-
-<div class="card">
-<h2>客户端版本 <span id="vinfo" style="font-weight:400;font-size:.78em;color:#9aa0a6"></span></h2>
-<div id="vrows"></div>
-<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
-<button class="btn pri" id="vsave">保存版本钉死</button>
-<button class="btn" id="vrefresh">检查更新</button>
-<span style="font-size:.75em;color:#9aa0a6">留空 = 跟随自动更新；填入版本号 = 钉死该版本</span>
-</div>
-</div>
-
-<div class="card">
-<h2>Provider 设置</h2>
-<label style="display:flex;gap:9px;align-items:flex-start;margin:0 0 14px;color:#c7cbd1;font-size:.85em;cursor:pointer">
-<input type="checkbox" id="inj" style="width:auto;margin-top:3px;accent-color:#7ab0ff">
-<span>为 Claude Code 档案补充 <code style="background:#22272f;padding:0 4px;border-radius:3px">metadata.user_id</code>（写入请求体）<br><span style="color:#9aa0a6;font-size:.85em">严格校验 Claude Code 身份的中转站需要它；只作用于 anthropic 协议</span></span>
-</label>
-<label>排除的 provider（不改写）</label>
-<div class="chips" id="exchips"></div>
-<div style="display:flex;gap:8px"><select id="exsel"></select><button class="btn" id="exadd">添加排除</button></div>
-<label>按 provider 覆盖（优先于全局档案）</label>
-<div id="ovrows"></div>
-<button class="btn pri" id="psave" style="margin-top:10px">保存 Provider 设置</button>
-</div>
-
-<div class="card">
-<h2>自定义档案</h2>
-<div class="plist" id="plist"></div>
-<div id="pform" hidden>
-<label>档案 id（英文、数字、.-_）</label><input type="text" id="pf-id" maxlength="40">
-<label>显示名</label><input type="text" id="pf-label" maxlength="60">
-<label>User-Agent</label><input type="text" id="pf-ua" maxlength="512">
-<label>通用头（所有请求，每行「键: 值」）</label><textarea id="pf-any"></textarea>
-<label>anthropic 协议头（每行「键: 值」）</label><textarea id="pf-anthropic"></textarea>
-<label>openai / responses 协议头（每行「键: 值」）</label><textarea id="pf-openai"></textarea>
-<div style="display:flex;gap:10px;margin-top:10px">
-<button class="btn pri" id="pfsave">保存档案</button>
-<button class="btn" id="pfcancel">取消</button>
-</div>
-</div>
-<button class="btn" id="pfnew">＋ 新增档案</button>
-</div>
-
-<div class="card">
-<h2>页面外观</h2>
-<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-<input type="range" id="fsr" min="12" max="24" step="1" aria-label="字体大小">
-<input type="number" id="fsn" min="12" max="24" step="1" aria-label="字体大小（像素）">
-<span id="fslabel" style="font-size:.78em;color:#9aa0a6"></span>
-<button class="btn" id="fsreset">重置（自适应）</button>
-</div>
-</div>
-
-<div class="box">
-<div class="row"><b>curl 切换</b>：<code>curl http://127.0.0.1:<span id="port"></span>/set/claude-code</code>（或 codex / pi / zcode / off）</div>
-<div class="row"><b>配置文件</b>：<code id="cfgpath"></code>（本页所有改动同样写入此文件，手动编辑亦热生效）</div>
-</div>
-
-<div id="status"></div>
-<script>
-var S=null,excl=[]
-function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
-function h2t(h){var o=[];for(var k in (h||{}))o.push(k+": "+(h||{})[k]);return o.join("\\n")}
-function t2h(t){var o={};String(t||"").split(/\\r?\\n/).forEach(function(line){if(!line.trim())return;var m=line.match(/^\\s*([A-Za-z0-9!#$%&'*+.^_|~-]+)\\s*:\\s*(.*)$/);if(!m)throw new Error("无法解析的头行："+line);o[m[1]]=m[2].trim()});return o}
-function flash(msg,isErr){var s=document.getElementById("status");s.textContent=msg;s.className="show"+(isErr?" err":"");clearTimeout(flash.t);flash.t=setTimeout(function(){s.className=""},isErr?5000:2500)}
-function post(body){return fetch("/config",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(async function(r){var j=await r.json().catch(function(){return {}});if(!r.ok||j.ok===false)throw new Error(j.error||("HTTP "+r.status));return j})}
-function when(ms){return ms?new Date(ms).toLocaleString("zh-CN",{hour12:false}):"从未"}
-
-function render(){
-document.getElementById("cur").textContent=(S.profiles.find(function(p){return p.id===S.profile})||{}).label||S.profile
-document.getElementById("port").textContent=S.port
-document.getElementById("cfgpath").textContent=S.configPath
-document.getElementById("grid").innerHTML=S.profiles.map(function(p){return '<button class="p'+(p.id===S.profile?" on":"")+'" data-id="'+esc(p.id)+'"><span>'+esc(p.label)+'</span><code>'+esc(p.id)+'</code></button>'}).join("")
-var keys=Object.keys(S.versions.values)
-document.getElementById("vinfo").textContent=S.versions.autoVersions?("· 自动更新开 · 每 "+S.versions.updateEveryHours+" 小时 · 上次检查 "+when(S.versions.fetchedAt)):"· 自动更新已关"
-document.getElementById("vrows").innerHTML=keys.map(function(k){
-var v=S.versions.values[k]
-var tag=v.source==="pinned"?'<span class="tag pin">钉死</span>':v.source==="detected"?'<span class="tag get">本机</span>':v.source==="fetched"?'<span class="tag get">npm</span>':'<span class="tag">内置</span>'
-return '<div class="vrow"><div class="vname"><b>'+esc(k)+'</b>'+tag+(v.npm?'<div style="font-size:.75em;color:#666">'+esc(v.npm)+'</div>':"")+'</div><input type="text" data-vk="'+esc(k)+'" value="'+esc(S.pins[k]||"")+'" placeholder="当前 '+esc(v.inUse)+'"></div>'}).join("")
-excl=S.excludeProviders.slice()
-renderEx()
-document.getElementById("inj").checked=S.injectMetadata!==false
-var profs=S.profiles
-document.getElementById("ovrows").innerHTML=S.providers.map(function(p){
-var opts=['<option value="">跟随全局</option>'].concat(profs.map(function(q){return '<option value="'+esc(q.id)+'"'+((S.providerOverrides[p.id]||"")===q.id?" selected":"")+'>'+esc(q.label)+'</option>'})).join("")
-return '<div class="exrow"><div>'+esc(p.name)+' '+(p.off?'<span class="off">(已停用)</span>':"")+'<br><code>'+esc(p.id)+' · '+esc(p.wire)+'</code></div><select data-ov="'+esc(p.id)+'">'+opts+'</select></div>'}).join("")
-renderPlist()
-}
-function renderEx(){
-var known=S.providers.map(function(p){return p.id})
-document.getElementById("exchips").innerHTML=excl.length?excl.map(function(id){return '<span class="chip">'+esc(id)+'<button data-unex="'+esc(id)+'" title="移除">✕</button></span>'}).join(""):'<span style="font-size:.8em;color:#666">无</span>'
-document.getElementById("exsel").innerHTML=S.providers.filter(function(p){return excl.indexOf(p.id)<0}).map(function(p){return '<option value="'+esc(p.id)+'">'+esc(p.name)+' ('+esc(p.id)+')</option>'}).join("")||'<option value="">（全部已排除）</option>'
-}
-function renderPlist(){
-var ids=Object.keys(S.customProfiles)
-document.getElementById("plist").innerHTML=ids.length?ids.map(function(id){var p=S.customProfiles[id]
-return '<div class="prow">📋 '+esc(p.label)+'<code>'+esc(id)+(p.forms?" · 双形态（配置文件编辑）":"")+'</code>'+(p.forms?"":'<button class="btn mini" data-edit="'+esc(id)+'">编辑</button>')+'<button class="btn mini" data-del="'+esc(id)+'">删除</button></div>'}).join(""):'<div style="font-size:.8em;color:#666">暂无，点下方新增</div>'
-}
-function collectProfiles(extra){
-var out={}
-for(var id in S.customProfiles){
-  if(extra&&extra.del===id)continue
-  if(extra&&extra.id===id)continue
-  out[id]=S.customProfiles[id].raw}
-if(extra&&extra.id&&!extra.del)out[extra.id]=extra.prof
-return out
-}
-async function load(){S=await (await fetch("/state")).json();render()}
-
-document.getElementById("grid").addEventListener("click",function(e){var b=e.target.closest("button.p");if(!b)return
-fetch("/set/"+encodeURIComponent(b.dataset.id),{method:"POST"}).then(load).catch(function(){flash("切换失败",true)})})
-document.getElementById("vsave").onclick=function(){
-var vs={};document.querySelectorAll("[data-vk]").forEach(function(i){vs[i.dataset.vk]=i.value.trim()})
-post({versions:vs}).then(function(){flash("版本钉死已保存");load()}).catch(function(e){flash(e.message,true)})}
-document.getElementById("vrefresh").onclick=function(){var b=this;b.disabled=true;b.textContent="检查中…"
-fetch("/versions/refresh",{method:"POST"}).then(function(r){return r.json()}).then(function(j){b.disabled=false;b.textContent="检查更新"
-if(j.ok){flash(j.changed&&j.changed.length?("已更新："+j.changed.join("、")):"已是最新");load()}else flash(j.error||"检查失败",true)}).catch(function(){b.disabled=false;b.textContent="检查更新";flash("检查失败",true)})}
-document.getElementById("exadd").onclick=function(){var v=document.getElementById("exsel").value;if(v&&excl.indexOf(v)<0){excl.push(v);renderEx()}}
-document.getElementById("exchips").addEventListener("click",function(e){var b=e.target.closest("[data-unex]");if(!b)return;excl=excl.filter(function(x){return x!==b.dataset.unex});renderEx()})
-document.getElementById("psave").onclick=function(){
-var ov={};document.querySelectorAll("[data-ov]").forEach(function(s){if(s.value)ov[s.dataset.ov]=s.value})
-post({excludeProviders:excl,providerOverrides:ov,injectMetadata:document.getElementById("inj").checked}).then(function(){flash("Provider 设置已保存");load()}).catch(function(e){flash(e.message,true)})}
-document.getElementById("pfnew").onclick=function(){openForm()}
-document.getElementById("pfcancel").onclick=function(){document.getElementById("pform").hidden=true}
-function openForm(id){var f=document.getElementById("pform");f.hidden=false
-var p=id?S.customProfiles[id]:null
-document.getElementById("pf-id").value=id||"";document.getElementById("pf-id").disabled=!!id
-document.getElementById("pf-label").value=p?p.label:""
-document.getElementById("pf-ua").value=p?p.ua:""
-document.getElementById("pf-any").value=p?h2t(p.headers.any):""
-document.getElementById("pf-anthropic").value=p?h2t(p.headers.anthropic):""
-document.getElementById("pf-openai").value=p?h2t(p.headers.openai):""
-if(p&&p.forms){document.getElementById("pf-ua").value=p.ua||"";document.getElementById("pf-ua").placeholder="该档案为双形态，此处只显示 anthropic 形态的 UA；完整编辑请改配置文件"}
-f.scrollIntoView({behavior:"smooth"})}
-document.getElementById("pfsave").onclick=function(){
-var id=document.getElementById("pf-id").value.trim(),ua=document.getElementById("pf-ua").value
-try{var prof={label:document.getElementById("pf-label").value.trim()||id,ua:ua,headers:{}}
-var any=t2h(document.getElementById("pf-any").value),an=t2h(document.getElementById("pf-anthropic").value),op=t2h(document.getElementById("pf-openai").value)
-if(Object.keys(any).length)prof.headers.any=any
-if(Object.keys(an).length)prof.headers.anthropic=an
-if(Object.keys(op).length)prof.headers.openai=op
-if(!/^[A-Za-z0-9._-]{1,40}$/.test(id))throw new Error("档案 id 只能是英文、数字和 . _ -")
-if(!ua)throw new Error("User-Agent 不能为空")
-post({profiles:collectProfiles({id:id,prof:prof})}).then(function(){flash("档案已保存");document.getElementById("pform").hidden=true;load()}).catch(function(e){flash(e.message,true)})
-}catch(e){flash(e.message,true)}}
-document.getElementById("plist").addEventListener("click",function(e){
-var d=e.target.closest("[data-del]"),t=e.target.closest("[data-edit]")
-if(d){post({profiles:collectProfiles({id:d.dataset.del,del:true})}).then(function(){flash("档案已删除");load()}).catch(function(er){flash(er.message,true)})}
-else if(t)openForm(t.dataset.edit)})
-var FSK="ua-switcher-font"
-function applyFs(v){
-var lbl=document.getElementById("fslabel")
-if(v){document.documentElement.style.setProperty("--fs",v+"px");lbl.textContent="固定 "+v+"px"}
-else{document.documentElement.style.removeProperty("--fs");lbl.textContent="自适应（随窗口）"}}
-function initFs(){
-var r=document.getElementById("fsr"),n=document.getElementById("fsn")
-var v=Number(localStorage.getItem(FSK))
-var ok=v>=12&&v<=24
-if(ok){r.value=v;n.value=v}else{r.value=16;n.value=""}
-applyFs(ok?v:null)
-r.oninput=function(){n.value=r.value;applyFs(Number(r.value));localStorage.setItem(FSK,r.value)}
-n.onchange=function(){var x=Math.round(Number(n.value));if(!(x>=12&&x<=24))x=16;n.value=x;r.value=x;applyFs(x);localStorage.setItem(FSK,String(x))}
-document.getElementById("fsreset").onclick=function(){localStorage.removeItem(FSK);r.value=16;n.value="";applyFs(null)}}
-initFs()
-load()
-</script>
-</main></body></html>`
+  try {
+    const st = fs.statSync(UI_HTML_PATH)
+    if (st.mtimeMs === uiHtmlCache.mtime && uiHtmlCache.html) return uiHtmlCache.html
+    const html = fs.readFileSync(UI_HTML_PATH, "utf8")
+    uiHtmlCache = { mtime: st.mtimeMs, html }
+    return html
+  } catch (e) {
+    return `<!doctype html><html><meta charset="utf-8"><body style="background:#09090b;color:#f4f4f5;font-family:sans-serif;padding:24px"><h1>magpie UA 切换器</h1><p>无法加载 ui.html: ${String(e?.message ?? e)}</p></body></html>`
+  }
 }
 
 function json(obj, status = 200) {
@@ -997,18 +950,49 @@ function json(obj, status = 200) {
   })
 }
 
+function isSameOriginRequest(req, url) {
+  const host = (req.headers.get("host") || "").split(":")[0].toLowerCase()
+  if (host && host !== "127.0.0.1" && host !== "localhost") return false
+  const secSite = (req.headers.get("sec-fetch-site") || "").toLowerCase()
+  if (secSite && secSite !== "same-origin" && secSite !== "none") return false
+  const origin = req.headers.get("origin")
+  if (origin) {
+    try {
+      const origHost = new URL(origin).hostname.toLowerCase()
+      if (origHost !== "127.0.0.1" && origHost !== "localhost") return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 async function handle(req) {
   const url = new URL(req.url)
+  if (!isSameOriginRequest(req, url)) {
+    return json({ ok: false, error: "forbidden cross-origin or invalid host request" }, 403)
+  }
   if (url.pathname === "/" && req.method === "GET") {
-    return new Response(page(), { headers: { "content-type": "text/html; charset=utf-8" } })
+    return new Response(page(), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy":
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+      },
+    })
   }
   if (url.pathname === "/state") return json(state())
   if (url.pathname === "/versions") return json(versionState(loadCfg()))
-  if (url.pathname === "/versions/refresh" && req.method === "POST") {
+  if ((url.pathname === "/versions/refresh" || url.pathname === "/fetch-versions") && req.method === "POST") {
     const r = await fetchLatestVersions(true)
     return json(r, r.ok ? 200 : 502)
   }
   if (url.pathname === "/config" && req.method === "POST") {
+    const ct = req.headers.get("content-type") || ""
+    if (!ct.toLowerCase().includes("application/json")) {
+      return json({ ok: false, error: "Content-Type must be application/json" }, 415)
+    }
     let body
     try {
       body = await req.json()
@@ -1028,6 +1012,10 @@ async function handle(req) {
       if ("injectMetadata" in body) {
         if (typeof body.injectMetadata !== "boolean") throw new Error("injectMetadata 必须是布尔值")
         patch.injectMetadata = body.injectMetadata
+      }
+      if ("autoVersions" in body) {
+        if (typeof body.autoVersions !== "boolean") throw new Error("autoVersions 必须是布尔值")
+        patch.autoVersions = body.autoVersions
       }
       if (incomingProfiles) patch.profiles = incomingProfiles
     } catch (e) {
@@ -1054,75 +1042,96 @@ async function handle(req) {
   return json({ error: "not found" }, 404)
 }
 
-function bindAttempt() {
+let bindRetryTimers = []
+
+function clearBindRetries() {
+  while (bindRetryTimers.length) clearTimeout(bindRetryTimers.pop())
+}
+
+function scheduleStartupBindRetries() {
+  clearBindRetries()
+  for (const delay of [300, 800, 2000, 5000]) {
+    const t = setTimeout(() => {
+      if (server === "external" || server === null) {
+        try { bindAttempt(false) } catch {}
+      }
+    }, delay)
+    t.unref?.()
+    bindRetryTimers.push(t)
+  }
+}
+
+function bindAttempt(scheduleRetries = true) {
   lastBindTry = Date.now()
+  const cfg = loadCfg()
+  if (server && typeof server === "object") return true
   try {
-    server = Bun.serve({ hostname: "127.0.0.1", port: loadCfg().port, fetch: handle })
+    server = Bun.serve({
+      port: cfg.port,
+      hostname: "127.0.0.1",
+      fetch: handle,
+    })
     globalThis.__uaSwitcherServer = server
+    clearBindRetries()
     note(`web switcher ready at http://127.0.0.1:${server.port}`)
     return true
-  } catch {}
-  // the port is held: a healthy sibling instance (e.g. a CLI-spawned host) is
-  // fine to defer to; it may outlive its CLI by a long time, and when it dies
-  // the hook's watchdog re-binds here.
-  try {
-    const port = loadCfg().port
-    fetch(`http://127.0.0.1:${port}/state`)
-      .then((r) => r.json())
-      .then((s) => {
-        if (s && s.plugin === "ua-switcher" && server === null) {
-          server = "external"
-          note(`another ua-switcher instance serves port ${port}; deferring to it`)
-        }
-      })
-      .catch(() => {})
-  } catch {}
-  return false
+  } catch (e) {
+    const isAddrInUse = e?.code === "EADDRINUSE" || /EADDRINUSE|address already in use|Failed to listen/i.test(e?.message ?? "")
+    if (isAddrInUse) {
+      server = "external"
+      if (scheduleRetries) scheduleStartupBindRetries()
+    } else {
+      note(`cannot bind web UI port ${cfg.port}: ${e?.message ?? e}`, "error")
+    }
+    return false
+  }
 }
 
 function startServer() {
   try {
     if (globalThis.__uaSwitcherServer) globalThis.__uaSwitcherServer.stop(true)
   } catch {}
-  if (bindAttempt()) return
-  let tries = 0
-  const t = setInterval(() => {
-    tries++
-    if (tries > 30 || server === "external") {
-      clearInterval(t)
-      if (server === null) note(`web switcher failed on port ${loadCfg().port}; rewriting still active — switch by editing ${CONFIG_PATH}`, "error")
-      return
-    }
-    if (bindAttempt()) clearInterval(t)
-  }, 1000)
-  try {
-    t.unref?.()
-  } catch {}
+  bindAttempt(true)
 }
 
 // ---- entry ------------------------------------------------------------------------
 
 export async function UASwitcherPlugin(input) {
   const opts = arguments[1] || {}
-  appLog = (message, level) => {
-    try {
-      input?.client?.app?.log({ level, service: "ua-switcher", message })
-    } catch {}
+  const client = input?.client ?? input
+  if (client?.app?.log) {
+    appLog = (message, level) => {
+      try {
+        client.app.log({ level: level || "info", service: "ua-switcher", message: `ua-switcher: ${message}` })
+      } catch {}
+    }
+  }
+  if (useMagpieDir(input?.directory)) {
+    refreshPaths()
+  } else {
+    refreshPaths()
+  }
+  if (!process.env.UA_SWITCHER_CONFIG) {
+    const from =
+      adoptLegacy(CONFIG_PATH) ||
+      adoptLegacy(VERSIONS_PATH) ||
+      adoptLegacy(besideConfig("-userid.json"))
+    if (from) note(`adopted existing config from ${from} into ${magpieDir()}`)
   }
   try {
     if (!fs.existsSync(CONFIG_PATH)) {
       fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
       const seed = typeof opts.profile === "string" ? opts.profile : "off"
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(normalize({ profile: seed }), null, 2) + "\n")
+      safeWriteJsonSync(CONFIG_PATH, normalize({ profile: seed }))
     }
   } catch (e) {
     note(`cannot write config: ${e?.message ?? e}`, "error")
   }
-  startServer()
   try {
     lastAppliedMtime = cache.mtime
     providersApply(loadCfg())
   } catch {}
+  startServer()
   fetchLatestVersions().catch(() => {}) // stale-cache check; rewrites on change
   const hooks = { "chat.headers": chatHeaders }
   // self-check mode: declare a provider whose upstream is the local echo

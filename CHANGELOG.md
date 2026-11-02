@@ -1,6 +1,56 @@
 # Changelog
 
-## 1.6.0 — 2026-11-02
+## 1.7.0 — 2026-11-02
+
+**安全加固、并发韧性、Schema 属性合并与协议拟真全面优化 / Security, Concurrency & Protocol Hardening**
+
+- **接口安全与 CSRF 防御（F-01, F-02, F-05）**：
+  - 本地端口 `127.0.0.1:3426` 引入 `Host`、`Origin` 与 `Sec-Fetch-Site` 严格同源校验，杜绝恶意网页在后台执行 Drive-by CSRF 与 DNS Rebinding 篡改。
+  - `POST /config` 严格校验 `Content-Type: application/json`，拒绝无需预检的 Simple Request。
+  - 修复 `HEADER_KEY_RE` 正则字符组未转义 `-` 导致包含冒号 `:` 的漏洞，新增保留头黑名单（`host`, `authorization`, `x-api-key` 等）与控制字符检测；`VERSION_RE` 补充尾部 `$` 锚点。
+  - Web UI 前端模板增加 `esc()` HTML 实体转义，防御 DOM 型 XSS。
+  - 页面响应头补充 `Content-Security-Policy` 与 `X-Frame-Options: DENY`。
+- **工具 Schema 兼容层健壮性（F-03, F-10, F-11）**：
+  - 修复顶层存在 `properties` 时直接跳过 `oneOf`/`allOf`/`anyOf` 属性合并的高危 Bug，确保公共基类属性与分支专有属性均被完整保留。
+  - 分支同名字段类型/枚举冲突时，自动合并为属性级 `{ anyOf: [...] }`（Anthropic 官方原生支持内部 anyOf），避免 First-Win 策略导致模型无法使用后续分支定义的参数。
+  - 正确合并 `allOf` 分支的 `required` 并集，修剪悬空必填字段。
+  - `schema.middleware.mjs` 全局包裹 `try/catch` 保证在 `moejs` 沙箱中绝对 Fail-Safe。
+- **并发安全与文件原子操作（F-04, F-09, F-15, F-16）**：
+  - 引入 `safeWriteJsonSync`（带进程 PID 隔离的临时文件 + Windows `renameSync` 的 `EPERM`/`EBUSY` 退避重试与拷贝回退机制）。
+  - 同时监听 `providers.json` 外部修改，解决与 Magpie 主进程双写冲突导致伪装 Header 丢失的问题，实现自动检测并自愈。
+  - `hooks.mjs` 诊断文件 `diagnose()` 采用原子写入并限制 `0o600` 权限。
+  - 对 `zcode-device-mid` 增加 10 秒内存缓存，避免高并发热路径重复触发同步 I/O。
+  - 全局 `noted` 与 `seen` 增加容量上限截断，杜绝长周期运行内存泄漏。
+- **协议拟真度与会话生命周期（F-06, F-07, F-08, F-13, F-14）**：
+  - `hooks.mjs` 区分持久化设备身份 `base_id`（`user_<64hex>_account_<uuid>`）与按生命周期轮转的 `session_id`（每 4 小时或重启后轮转），兼容平滑迁移旧版 `user_id`。
+  - `claude-code` 动态自适应当前平台的 `X-Stainless-OS` 与 `X-Stainless-Arch`，Runtime 版本调整为主流 LTS `v22.14.0`。
+  - 修复 `pi` 档案 Anthropic 形态硬编码版本 Bug，动态引用 `V.pi` 并补齐 `anthropic-version: "2023-06-01"`。
+  - `zcode` 平台与系统标识改为动态探测；`codex` 终端名称读取真实 `TERM_PROGRAM` / `WT_SESSION` 环境变量。
+  - `readAsarPackageVersion` 增加 entry 大小（上限 1MB）与偏移范围防御校验。
+- **控制台与前端体验全新重构（Web UI Modernization）**：
+  - 架构解耦：将单文件内联模板拆分为同目录独立静态文件 `ui.html`，由 `index.mjs` 基于 `fs.statSync` mtime 缓存机制零构建读取，前后端职责解耦，彻底消除模板字面量双重转义隐患。
+  - 视觉革新：采用 Linear / Vercel 极客暗黑风设计规范（Zinc 950、微高光边框、顶部径向氛围光），支持 Dark/Light 主题切换与 11px-17px 字号无级缩放。
+  - Bento Grid 身份矩阵：每张卡片展示协议归属（Anthropic CLI / OpenAI Rust / Dual Adaptive 等）、防降智特征、实时真实 User-Agent 字符串预览及一键复制。
+  - 统一 Provider 路由矩阵：将「排除」与「覆盖」合一，支持单行 Provider 三态切换（跟随全局 / 保持原生 / 锁定档案）与实时搜索过滤。
+  - 客户端版本控制台：完整展示手动锁定、本机 ASAR 探测、npm 同步与官方内置四种来源状态，支持一键从 npm 镜像热更新。
+  - 自定义预设工坊：支持可视化添加分协议 Header（`any`/`anthropic`/`openai`），内置保留头与合法性前端即时校验。
+  - 实时审计流抽屉：底部常驻终端风格折叠抽屉，实时记录网关 `chat.headers` 注入流水与自愈事件，支持 3 秒自动轮询与过滤。
+- **5 项残余细节修正**：
+  - CSP 响应头放行 `img-src 'self' data:`，支持内联 SVG 图标渲染。
+  - `providersApply` 统一维护 `lastAppliedMtime` 与 `lastProvidersMtime`，消除 Web 请求触发的冗余重刷。
+  - `POST /config` 补齐 `injectMetadata` 与 `autoVersions` 布尔配置写入。
+  - `GET /state` 扩展 `resolvedProfiles` 预览与 `events` 环形审计日志（保留所有旧字段）。
+- **环境自适应与 Docker / XDG / 便携版路径决议（合入 PR #1 强化版，致谢社区贡献者 @bearchild233）**：
+  - 新增 `paths.mjs`：自适应决议 magpie 目录（优先使用插件 `input.directory` 即 `appdir.Config()`，支持 Windows 便携版 `data/` 目录；其次判断 `$XDG_CONFIG_HOME/magpie`，全面支持官方 Docker 镜像 `HOME=/config/home` 与 `XDG_CONFIG_HOME=/config`；最后回退 `~/.config/magpie`）。环境变量 `UA_SWITCHER_CONFIG` 与 `UA_SWITCHER_PROVIDERS` 依然拥有最高优先级。
+  - 自动旧配置无损迁移（`adoptLegacy`）：将旧目录的 `ua-switcher.json`、`-versions.json`、`-userid.json` 自动导入新目录；增加严格安全白名单与 `fs.lstatSync` 软链接越权阻断，且目标已有时永不覆盖。
+  - 跨平台文件权限与符号链接终极融合：`safeWriteJsonSync` 解引用符号链接目标，自动继承原始文件权限（`st.mode & 0o777`）并在非 Windows 环境下通过 `fs.chmodSync` 精确保持 `0o600`，同时具备多进程 PID 隔离与 Windows 文件锁 3 轮重试。
+  - 修复多实例与重启时 3426 端口 `"external"` 看门狗永久饿死缺陷：新增启动期阶梯退避重试（300ms, 800ms, 2000ms, 5000ms），并在网关钩子看门狗中同时覆盖 `server === null || server === "external"`。
+  - `/state` 暴露 `providersPath` 与 `providersError` 状态字段；Web UI 与控制台新增路径探测与读取失败告警横幅。
+- **官方矢量品牌图标全量集成**：
+  - 左上角主品牌图标替换为 yetone/magpie 官方喜鹊剪影矢量 SVG（渐变容器内嵌）。
+  - 卡片全面换装官方品牌原生矢量图标（Claude Code 像素机器人、OpenAI Codex 渐变结、Inflection Pi 几何标、智谱 GLM 棱镜、OpenCode 终端符号、Google Antigravity 四色闪耀光芒及 Off 电源矢量），零外部网络请求，100% 符合 CSP 安全规范。
+- **测试覆盖**：
+  - `selftest.mjs` 测试套件扩展至 **150 项断言**（100% 通过），全量覆盖路径决议、Docker/XDG 优先级、便携版标记探测、旧目录安全迁移、符号链接与 0600 权限保持、CSRF 拦截、外部文件自愈、Schema 冲突合并及品牌图标支持。
 
 **工具 schema 兼容层 / Tool-schema compatibility**
 

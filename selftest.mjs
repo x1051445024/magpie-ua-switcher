@@ -125,12 +125,20 @@ eq("fallback source is builtin", vs.values.codex.source, "builtin")
 
 // rejects unknown profiles; page renders
 eq("unknown profile rejected", (await fetch(base + "/set/nope", { method: "POST" })).status, 400)
-eq("page renders", (await (await fetch(base + "/")).text()).includes("magpie UA"), true)
+const pageResp = await fetch(base + "/")
+eq("page renders", (await pageResp.text()).includes("magpie UA"), true)
+eq("csp includes img-src data:", (pageResp.headers.get("content-security-policy") || "").includes("img-src 'self' data:"), true)
+const stInit = await (await fetch(base + "/state")).json()
+eq("state has resolvedProfiles", typeof stInit.resolvedProfiles?.["claude-code"]?.ua, "string")
+eq("state has events array", Array.isArray(stInit.events), true)
 eq("logs flow through client.app.log", logs.length > 0, true)
 
 // native providers (providers.json headers) — codex
+if (process.platform !== "win32") fs.chmodSync(provPath, 0o600)
 await fetch(base + "/set/codex", { method: "POST" })
 let ps = Object.fromEntries(prov().map((p) => [p.id, p]))
+if (process.platform !== "win32") eq("native rewrite keeps providers.json 0600", (fs.statSync(provPath).mode & 0o777).toString(8), "600")
+eq("native rewrite leaves no temp file", fs.existsSync(provPath + ".ua-switcher.tmp"), false)
 eq("native responses UA", String(ps["p-responses"].headers["User-Agent"]).startsWith("codex_cli_rs/0.164.0 ("), true)
 eq("native responses originator+beta", [ps["p-responses"].headers["originator"], ps["p-responses"].headers["OpenAI-Beta"]], ["codex_cli_rs", "responses=experimental"])
 eq("native keeps user's own header", ps["p-responses"].headers["X-Keep"], "mine")
@@ -147,12 +155,29 @@ eq("off keeps user's header", ps["p-responses"].headers["X-Keep"], "mine")
 eq("off drops empty headers field", "headers" in ps["p-anthropic"], false)
 eq("applied map cleared", Object.keys(JSON.parse(fs.readFileSync(cfgPath, "utf8")).applied ?? {}), [])
 
+// external rewrite of providers.json is self-healed by chatHeaders
+await fetch(base + "/set/codex", { method: "POST" })
+const wiped = JSON.parse(fs.readFileSync(provPath, "utf8"))
+for (const p of wiped.providers) delete p.headers
+fs.writeFileSync(provPath, JSON.stringify(wiped))
+await apply("p-responses", "@ai-sdk/openai")
+const healed = JSON.parse(fs.readFileSync(provPath, "utf8"))
+const pResp = healed.providers.find((p) => p.id === "p-responses")
+eq("external providers.json wipe self-healed", String(pResp?.headers?.["User-Agent"]).startsWith("codex_cli_rs/"), true)
+await fetch(base + "/set/off", { method: "POST" })
+
 // /config endpoint: pins, exclusions, overrides, custom profiles
 async function postCfg(body) {
   const res = await fetch(base + "/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
   return { status: res.status, j: await res.json().catch(() => ({})) }
 }
 eq("state lists providers", (await (await fetch(base + "/state")).json()).providers.map((p) => p.id), ["zcode", "p-responses", "p-anthropic"])
+let st0 = await (await fetch(base + "/state")).json()
+eq("state names providers.json", [st0.providersPath, st0.providersError], [provPath, null])
+fs.renameSync(provPath, provPath + ".away")
+st0 = await (await fetch(base + "/state")).json()
+eq("state says providers.json is missing", [st0.providers.map((p) => p.id), st0.providersError], [["zcode"], "not found"])
+fs.renameSync(provPath + ".away", provPath)
 let rc = await postCfg({ versions: { codex: "8.8.8" } })
 eq("config saves pins", rc.j.ok, true)
 await fetch(base + "/set/codex", { method: "POST" })
@@ -163,10 +188,26 @@ eq("config clears pins", rc.j.state.versions.values.codex.source, "builtin")
 
 eq("bad id rejected", (await postCfg({ profiles: { "bad id!": { ua: "x/1" } } })).status, 400)
 eq("bad pin rejected", (await postCfg({ versions: { codex: "not-a-version!" } })).status, 400)
+eq("pin with trailing spaces rejected", (await postCfg({ versions: { codex: "1.0.0-bad spaces" } })).status, 400)
 eq("unknown version key rejected", (await postCfg({ versions: { nope: "1.2.3" } })).status, 400)
 eq("bad header key rejected", (await postCfg({ profiles: { ok1: { ua: "x/1", headers: { any: { "bad key": "v" } } } } })).status, 400)
+eq("header with colon rejected", (await postCfg({ profiles: { badh: { ua: "x/1", headers: { any: { "Evil:Header": "1" } } } } })).status, 400)
+eq("protected header Authorization rejected", (await postCfg({ profiles: { badauth: { ua: "x/1", headers: { any: { Authorization: "Bearer bad" } } } } })).status, 400)
+eq("reserved profile id rejected", (await postCfg({ profiles: { off: { ua: "x/1" } } })).status, 400)
 eq("override unknown profile rejected", (await postCfg({ providerOverrides: { newapi: "nope" } })).status, 400)
 eq("bad excludes rejected", (await postCfg({ excludeProviders: ["x", 5] })).status, 400)
+
+const csrfPost = await fetch(base + "/set/codex", {
+  method: "POST",
+  headers: { Origin: "https://evil.example.com", "Sec-Fetch-Site": "cross-site" },
+})
+eq("csrf cross-origin rejected", csrfPost.status, 403)
+const badCtPost = await fetch(base + "/config", {
+  method: "POST",
+  headers: { "Content-Type": "text/plain" },
+  body: JSON.stringify({ profile: "codex" }),
+})
+eq("config text/plain simple request rejected", badCtPost.status, 415)
 
 rc = await postCfg({ profiles: { mycli: { label: "MyCli", ua: "MyCli/2.0", headers: { any: { "X-T": "1" } } } } })
 eq("config saves custom profile", rc.j.ok, true)
@@ -185,6 +226,13 @@ eq("config restores excludes", rc.j.state.excludeProviders, ["zcode"])
 await fetch(base + "/set/off", { method: "POST" })
 rc = await postCfg({ profiles: {} })
 eq("config deletes custom profiles", rc.j.state.customProfiles, {})
+
+rc = await postCfg({ versions: { pi: "2.2.0" } })
+eq("config saves pi pin", rc.j.ok, true)
+await fetch(base + "/set/pi", { method: "POST" })
+eq("pinned pi version wins", (await apply("any", "@ai-sdk/anthropic"))["User-Agent"], "claude-cli/2.2.0")
+rc = await postCfg({ versions: { pi: "" } })
+eq("config clears pi pin", rc.j.ok, true)
 
 // opencode profile: Bun runtime UA + opencode identity/session headers
 await fetch(base + "/set/opencode", { method: "POST" })
@@ -266,6 +314,10 @@ eq("gateway keeps messages", JSON.stringify(got?.messages), JSON.stringify(gbody
 const got2 = await callHook({ model: "m", messages: [] }, "anthropic", "p-anthropic/claude")
 eq("gateway reuses one user id", got2?.metadata?.user_id, got?.metadata?.user_id)
 eq("user id persisted", fs.existsSync(uidPath), true)
+const uidRaw = JSON.parse(fs.readFileSync(uidPath, "utf8"))
+eq("persisted user_id has base_id", typeof uidRaw.base_id, "string")
+eq("base_id matches expected format", /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}$/i.test(uidRaw.base_id), true)
+eq("user_id format has session", /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/i.test(uidRaw.user_id), true)
 
 eq("gateway leaves client user_id", await callHook({ model: "m", metadata: { user_id: "user_own", x: 1 } }, "anthropic", "x/y"), null)
 eq("gateway skips responses wire", await callHook({ model: "m" }, "responses", "x/y"), null)
@@ -328,6 +380,69 @@ const nested = { name: "n", input_schema: { type: "object", properties: { p: { o
 const nestedBody = { model: "m", tools: [nested] }
 eq("mw keeps nested unions", mw(nestedBody), null)
 eq("mw nested union intact", JSON.stringify(nested.input_schema.properties.p.oneOf.length), "2")
+
+// composite top-level properties + oneOf branches
+const compositeUnion = {
+  name: "comp",
+  input_schema: {
+    type: "object",
+    properties: { base: { type: "string" } },
+    oneOf: [{ properties: { a: { type: "string" } } }, { properties: { b: { type: "number" } } }],
+  },
+}
+mr = mw({ model: "m", tools: [compositeUnion] })
+eq("mw preserves base and branch properties", Object.keys(mr.tools[0].input_schema.properties).sort(), ["a", "b", "base"])
+
+// branch property conflict merges into anyOf
+const conflictUnion = {
+  name: "conf",
+  input_schema: {
+    type: "object",
+    oneOf: [
+      { properties: { mode: { type: "string", enum: ["fast"] } } },
+      { properties: { mode: { type: "string", enum: ["slow"] } } },
+    ],
+  },
+}
+mr = mw({ model: "m", tools: [conflictUnion] })
+eq("mw merges conflicting branch property as anyOf", Array.isArray(mr.tools[0].input_schema.properties.mode.anyOf), true)
+eq("mw conflicting anyOf branch count", mr.tools[0].input_schema.properties.mode.anyOf.length, 2)
+
+// --- paths.mjs: magpie's folder as appdir.Config() decides it ---
+const paths = await import("./paths.mjs")
+const ptmp = fs.mkdtempSync(path.join(os.tmpdir(), "ua-switcher-paths-"))
+const fakeHome = path.join(ptmp, "home")
+const home = () => fakeHome
+paths.resetMagpieDir()
+eq("dir: absolute XDG_CONFIG_HOME wins", paths.magpieDir({ XDG_CONFIG_HOME: path.join(ptmp, "xdg") }, home), path.join(ptmp, "xdg", "magpie"))
+eq("dir: relative XDG_CONFIG_HOME ignored", paths.magpieDir({ XDG_CONFIG_HOME: "rel/xdg" }, home), path.join(fakeHome, ".config", "magpie"))
+eq("dir: empty XDG_CONFIG_HOME ignored", paths.magpieDir({ XDG_CONFIG_HOME: "" }, home), path.join(fakeHome, ".config", "magpie"))
+eq("dir: no XDG falls back to ~/.config", paths.magpieDir({}, home), path.join(fakeHome, ".config", "magpie"))
+const handed = path.join(ptmp, "portable", "data")
+fs.mkdirSync(handed, { recursive: true })
+eq("dir: relative input.directory refused", paths.useMagpieDir("portable/data"), false)
+eq("dir: input.directory without magpie's files refused", paths.useMagpieDir(handed), false)
+fs.writeFileSync(path.join(handed, "settings.json"), "{}")
+eq("dir: input.directory with magpie's files taken", paths.useMagpieDir(handed), true)
+eq("dir: input.directory beats XDG", paths.magpieDir({ XDG_CONFIG_HOME: path.join(ptmp, "xdg") }, home), handed)
+paths.resetMagpieDir()
+eq("paths: UA_SWITCHER_CONFIG still overrides", paths.configPath(), cfgPath)
+eq("paths: UA_SWITCHER_PROVIDERS still overrides", paths.providersPath(), provPath)
+eq("paths: files beside the config", paths.besideConfig("-userid.json"), uidPath)
+
+// 1.6.0 and before wrote to ~/.config/magpie whatever magpie used
+const oldDir = path.join(fakeHome, ".config", "magpie")
+fs.mkdirSync(oldDir, { recursive: true })
+fs.writeFileSync(path.join(oldDir, "ua-switcher.json"), JSON.stringify({ profile: "codex" }))
+const moved = path.join(ptmp, "xdg", "magpie", "ua-switcher.json")
+eq("legacy: copied when the new file is missing", paths.adoptLegacy(moved, home), oldDir)
+eq("legacy: copy holds the old profile", JSON.parse(fs.readFileSync(moved, "utf8")).profile, "codex")
+fs.writeFileSync(moved, JSON.stringify({ profile: "pi" }))
+eq("legacy: an existing file is never overwritten", [paths.adoptLegacy(moved, home), JSON.parse(fs.readFileSync(moved, "utf8")).profile], ["", "pi"])
+eq("legacy: nothing to copy", paths.adoptLegacy(path.join(ptmp, "xdg", "magpie", "ua-switcher-userid.json"), home), "")
+eq("legacy: same folder is left alone", paths.adoptLegacy(path.join(oldDir, "ua-switcher.json"), home), "")
+eq("legacy: non-whitelisted file refused", paths.adoptLegacy(path.join(ptmp, "xdg", "magpie", "evil.json"), home), "")
+fs.rmSync(ptmp, { recursive: true, force: true })
 
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)

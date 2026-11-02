@@ -1,0 +1,1490 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>magpie UA 切换器 · Gateway Identity Control</title>
+  <script>
+    try {
+      var savedFs = localStorage.getItem("ua-switcher-font");
+      if (savedFs) document.documentElement.style.setProperty("--fs", Math.min(18, Math.max(11, Number(savedFs))) + "px");
+      var savedTheme = localStorage.getItem("ua-switcher-theme");
+      if (savedTheme === "light" || savedTheme === "dark") document.documentElement.setAttribute("data-theme", savedTheme);
+    } catch (e) {}
+  </script>
+  <style>
+    :root {
+      --fs: 13px;
+      --bg: #09090b;
+      --bg-elevated: #121216;
+      --bg-card: rgba(20, 20, 25, 0.78);
+      --bg-subtle: rgba(255, 255, 255, 0.035);
+      --bg-hover: rgba(255, 255, 255, 0.06);
+      --bg-input: #0d0d11;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --text: #f4f4f5;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --primary: #3b82f6;
+      --primary-hover: #60a5fa;
+      --primary-glow: rgba(59, 130, 246, 0.22);
+      --success: #10b981;
+      --success-bg: rgba(16, 185, 129, 0.12);
+      --warning: #f59e0b;
+      --warning-bg: rgba(245, 158, 11, 0.12);
+      --purple: #a855f7;
+      --purple-bg: rgba(168, 85, 247, 0.12);
+      --danger: #ef4444;
+      --danger-bg: rgba(239, 68, 68, 0.12);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
+      --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    }
+
+    html[data-theme="light"] {
+      --bg: #f8fafc;
+      --bg-elevated: #ffffff;
+      --bg-card: rgba(255, 255, 255, 0.9);
+      --bg-subtle: rgba(15, 23, 42, 0.035);
+      --bg-hover: rgba(15, 23, 42, 0.06);
+      --bg-input: #ffffff;
+      --border: rgba(15, 23, 42, 0.09);
+      --border-strong: rgba(15, 23, 42, 0.18);
+      --text: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #64748b;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --primary-glow: rgba(37, 99, 235, 0.15);
+      --shadow: 0 8px 24px -8px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0 0 72px 0;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -15%, rgba(59, 130, 246, 0.14), transparent),
+        radial-gradient(ellipse 50% 40% at 85% 10%, rgba(168, 85, 247, 0.07), transparent);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: var(--fs);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Header Bar */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: rgba(9, 9, 11, 0.75);
+      border-bottom: 1px solid var(--border);
+    }
+    html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.82); }
+    .topbar-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      box-shadow: 0 2px 12px rgba(37, 99, 235, 0.4);
+      flex-shrink: 0;
+      padding: 5px;
+    }
+    .brand-logo svg {
+      width: 100%;
+      height: 100%;
+      fill: #ffffff;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.2));
+    }
+    .brand-title {
+      font-weight: 600;
+      font-size: 1.1em;
+      letter-spacing: -0.01em;
+      margin: 0;
+    }
+    .status-pills {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.85em;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--bg-subtle);
+      color: var(--text-secondary);
+    }
+    .pill-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+    .pill-dot.off { background: var(--text-muted); box-shadow: none; }
+    .pill-code {
+      font-family: var(--font-mono);
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* Buttons & Inputs */
+    button, .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.92em;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    button:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-strong);
+    }
+    button:active { transform: translateY(1px); }
+    button.btn-primary {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #fff;
+      box-shadow: 0 2px 10px var(--primary-glow);
+    }
+    button.btn-primary:hover {
+      background: var(--primary-hover);
+      border-color: var(--primary-hover);
+    }
+    button.btn-danger {
+      background: var(--danger-bg);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: var(--danger);
+    }
+    button.btn-danger:hover {
+      background: rgba(239, 68, 68, 0.2);
+    }
+    button.btn-sm {
+      padding: 4px 8px;
+      font-size: 0.84em;
+    }
+
+    input[type="text"], select {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.92em;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    input[type="text"]:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-glow);
+    }
+    input[type="text"].invalid {
+      border-color: var(--danger);
+      box-shadow: 0 0 0 2px var(--danger-bg);
+    }
+    .mono { font-family: var(--font-mono); }
+
+    /* Main Container */
+    .container {
+      max-width: 1120px;
+      margin: 20px auto;
+      padding: 0 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Section Cards */
+    .section-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .section-title {
+      margin: 0;
+      font-size: 1.08em;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section-desc {
+      margin: 4px 0 0 0;
+      font-size: 0.88em;
+      color: var(--text-secondary);
+    }
+
+    /* Config Path & Quick Switches Bar */
+    .meta-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      font-size: 0.88em;
+    }
+    .meta-path {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary);
+      word-break: break-all;
+    }
+    .meta-toggles {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    /* Toggle Switch */
+    .switch-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 0.92em;
+      color: var(--text-secondary);
+    }
+    .switch-input {
+      appearance: none;
+      width: 34px;
+      height: 19px;
+      background: var(--border-strong);
+      border-radius: 999px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s ease;
+      margin: 0;
+    }
+    .switch-input::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .switch-input:checked { background: var(--primary); }
+    .switch-input:checked::after { transform: translateX(15px); }
+
+    /* Profile Switcher Bento Grid */
+    .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(295px, 1fr));
+      gap: 12px;
+    }
+    .p-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+      text-align: left;
+    }
+    .p-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.45);
+    }
+    .p-card.active {
+      border-color: var(--primary);
+      background: linear-gradient(180deg, rgba(59, 130, 246, 0.09) 0%, var(--bg-elevated) 100%);
+      box-shadow: 0 0 0 1px var(--primary), 0 10px 28px -8px var(--primary-glow);
+    }
+    .p-card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .p-icon-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .p-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      padding: 7px;
+      color: var(--text);
+      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .p-icon svg {
+      width: 100%;
+      height: 100%;
+      max-width: 24px;
+      max-height: 24px;
+      display: block;
+    }
+    .p-card.active .p-icon {
+      border-color: var(--primary);
+      background: rgba(59, 130, 246, 0.12);
+      box-shadow: 0 0 14px rgba(59, 130, 246, 0.28);
+      color: var(--primary-hover);
+    }
+    .p-name {
+      font-weight: 600;
+      font-size: 1em;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .p-id-tag {
+      font-family: var(--font-mono);
+      font-size: 0.78em;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+    .p-desc {
+      font-size: 0.83em;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+    .p-ua-box {
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 0.78em;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .p-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 0.76em;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      border: 1px solid transparent;
+    }
+    .badge-active { background: var(--success-bg); color: var(--success); border-color: rgba(16, 185, 129, 0.25); }
+    .badge-pin { background: var(--warning-bg); color: var(--warning); border-color: rgba(245, 158, 11, 0.25); }
+    .badge-detected { background: var(--purple-bg); color: var(--purple); border-color: rgba(168, 85, 247, 0.25); }
+    .badge-fetched { background: rgba(59, 130, 246, 0.12); color: var(--primary-hover); border-color: rgba(59, 130, 246, 0.25); }
+    .badge-muted { background: var(--bg-subtle); color: var(--text-muted); border-color: var(--border); }
+
+    /* Two-Column Responsive Layout for Routing & Versions */
+    .split-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 20px;
+    }
+    @media (max-width: 920px) {
+      .split-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Tables */
+    .data-table-wrap {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow-x: auto;
+      background: var(--bg-elevated);
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.9em;
+    }
+    table.data-table th {
+      padding: 10px 12px;
+      font-size: 0.8em;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border);
+    }
+    table.data-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    table.data-table tr:last-child td { border-bottom: none; }
+    table.data-table tr:hover td { background: var(--bg-subtle); }
+
+    /* Custom Profile Cards */
+    .cp-item {
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .cp-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .hdr-list {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .hdr-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 1.4fr auto;
+      gap: 6px;
+      align-items: center;
+    }
+    @media (max-width: 640px) {
+      .hdr-row { grid-template-columns: 1fr; }
+    }
+
+    /* Live Audit Stream Drawer (Bottom Dock) */
+    .audit-dock {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-strong);
+      box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.5);
+      transition: height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .audit-bar {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 8px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 0.85em;
+    }
+    .audit-body {
+      max-width: 1120px;
+      margin: 0 auto;
+      height: 210px;
+      padding: 8px 20px 14px 20px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 0.82em;
+      border-top: 1px solid var(--border);
+      display: none;
+    }
+    .audit-dock.open .audit-body { display: block; }
+    .log-line {
+      padding: 4px 6px;
+      border-radius: 4px;
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    }
+    .log-line:hover { background: var(--bg-subtle); }
+    .log-ts { color: var(--text-muted); flex-shrink: 0; }
+    .log-lvl { font-weight: 700; width: 46px; flex-shrink: 0; }
+    .log-lvl.info { color: var(--primary-hover); }
+    .log-lvl.error { color: var(--danger); }
+    .log-lvl.ok { color: var(--success); }
+
+    /* Toast Notification */
+    .toast-wrap {
+      position: fixed;
+      bottom: 52px;
+      right: 24px;
+      z-index: 60;
+      pointer-events: none;
+    }
+    .toast {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      padding: 10px 16px;
+      border-radius: var(--radius-md);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      font-size: 0.9em;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      transform: translateY(12px);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.err { border-color: var(--danger); color: var(--danger); }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation & Status Bar -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-logo" title="magpie UA Switcher"><svg viewBox="0 0 44 44" width="100%" height="100%" style="display:block"><path fill-rule="evenodd" d="M1.49 5.61C1.36 5.78 1.21 6.46 1.2 6.87C1.2 6.91 1.2 7.02 1.2 7.11C1.19 7.44 1.29 8.03 1.4 8.33C1.43 8.42 1.5 8.6 1.53 8.73C1.6 8.93 1.67 9.07 1.86 9.39C2.17 9.93 2.29 10.11 2.34 10.18C2.39 10.23 2.5 10.39 2.6 10.53C2.84 10.88 3.01 11.11 3.18 11.3C3.25 11.37 3.46 11.62 3.64 11.83C3.81 12.06 4.07 12.37 4.22 12.53C4.71 13.1 5.22 13.68 5.41 13.89C5.96 14.48 6.51 15.09 6.67 15.29C6.76 15.41 6.91 15.59 7 15.67C7.28 15.98 7.71 16.51 7.9 16.79C7.95 16.85 7.99 16.91 8.01 16.91C8.05 16.93 8.26 17.24 8.23 17.27C8.21 17.28 8.17 17.25 8.02 17.08C7.94 16.99 7.89 16.93 7.59 16.66C7.52 16.6 7.41 16.48 7.35 16.39C7.22 16.24 6.77 15.75 6.29 15.25C6.17 15.12 6.02 14.96 5.96 14.9C5.9 14.84 5.77 14.7 5.67 14.6C5.56 14.5 5.39 14.31 5.28 14.19C5.16 14.08 4.91 13.8 4.71 13.59C4.52 13.38 4.26 13.1 4.16 12.98C4.05 12.86 3.88 12.68 3.78 12.57C3.54 12.34 3.03 11.8 2.75 11.51C1.89 10.56 0.87 9.65 0.71 9.68C0.63 9.7 0.57 9.82 0.56 10C0.56 10.09 0.56 10.24 0.55 10.34C0.56 10.44 0.55 10.6 0.55 10.68C0.56 10.76 0.56 10.92 0.57 11.03C0.56 11.15 0.6 11.4 0.63 11.61C0.87 12.97 1.41 13.79 2.78 14.92C3.01 15.11 3.28 15.34 3.39 15.42C3.48 15.51 3.64 15.63 3.73 15.69C4.19 16.02 6.45 17.89 6.98 18.39C7.41 18.78 7.48 18.86 7.54 18.95C7.56 19 7.65 19.08 7.72 19.12C7.79 19.16 7.88 19.23 7.92 19.29C7.95 19.33 8.03 19.45 8.11 19.53C8.18 19.62 8.26 19.7 8.26 19.72C8.29 19.74 8.27 19.74 8.21 19.73C8.17 19.71 8.1 19.65 8.06 19.58C8 19.53 7.9 19.44 7.82 19.38C7.74 19.34 7.64 19.26 7.62 19.21C7.59 19.16 7.48 19.05 7.37 18.97C7.26 18.88 6.97 18.63 6.72 18.42C6.03 17.81 4.51 16.65 3.56 16C3.34 15.86 3.03 15.64 2.87 15.52C2.61 15.34 1.55 14.67 0.98 14.33C0.7 14.15 0.6 14.15 0.56 14.29C0.5 14.56 0.76 15.94 0.9 16.13C0.92 16.16 0.97 16.24 1 16.3C1.23 16.86 1.91 17.68 2.65 18.29C2.88 18.47 4.01 19.22 4.64 19.61C6.2 20.55 6.57 20.81 7.37 21.49C8.2 22.19 8.71 22.76 9.3 23.64C9.62 24.09 9.84 24.48 10.29 25.31C10.45 25.61 10.54 25.74 10.59 25.75C10.65 25.76 10.78 25.66 11.01 25.45C11.51 24.99 11.94 24.63 12.3 24.34C12.82 23.95 12.98 23.83 13.06 23.81C13.17 23.78 13.16 23.83 13.01 23.97C12.07 24.82 10.97 26 10.26 26.93C10.09 27.15 9.84 27.49 9.69 27.67C9.55 27.86 9.42 28.03 9.42 28.04C9.42 28.07 9.29 28.27 9.13 28.5C8.61 29.22 7.76 30.72 7.76 30.91C7.76 31.03 7.86 31.01 8.31 30.78C8.97 30.45 9.54 30.24 10.46 29.99C11.63 29.67 12.5 29.63 11.52 29.93C10.52 30.25 9.79 30.67 9.23 31.22C8.84 31.62 8.85 31.65 9.36 31.7C10.15 31.75 10.84 31.92 11.6 32.22C12.79 32.68 13.49 33.13 15.56 34.82C16.45 35.54 17.32 36.19 17.73 36.43C17.89 36.52 18.1 36.65 18.21 36.73C19.13 37.34 21.14 38.12 22.31 38.33C22.46 38.35 22.64 38.38 22.73 38.41C22.81 38.42 22.95 38.43 23.05 38.43C23.12 38.43 23.26 38.45 23.33 38.47C23.51 38.53 25.9 38.53 26.08 38.47C26.14 38.45 26.27 38.43 26.36 38.43C26.45 38.43 26.6 38.42 26.68 38.41C26.77 38.38 26.95 38.35 27.1 38.33C28.26 38.13 30.25 37.37 31.32 36.7C31.48 36.6 31.71 36.46 31.82 36.39C32.11 36.21 33.13 35.44 33.4 35.2C34.17 34.51 35.47 33.05 35.77 32.55C35.81 32.49 35.98 32.23 36.15 31.99C36.3 31.75 36.52 31.43 36.6 31.28C36.69 31.12 36.81 30.91 36.88 30.79C37.09 30.45 37.49 29.63 37.64 29.23C37.72 29.03 37.83 28.78 37.88 28.69C37.98 28.5 38.41 27.18 38.51 26.78C38.88 25.28 39.02 23.77 38.91 22.43C38.88 22.17 38.86 21.89 38.85 21.82C38.84 21.75 38.82 21.57 38.79 21.44C38.64 20.5 38.49 19.93 38.13 19.01C37.93 18.55 37.41 17.48 37.25 17.23C36.99 16.83 36.76 15.87 36.76 15.26C36.76 13.74 37.71 12.75 39.63 12.25C40.13 12.11 41.36 11.88 42.07 11.77C43.42 11.58 43.5 11.56 43.31 11.31C42.9 10.79 40.9 10.01 39.22 9.7C37.92 9.47 38.02 9.51 37.57 9.09C37.01 8.56 36.34 8.05 36.02 7.88C35.94 7.85 35.78 7.76 35.66 7.68C35.09 7.34 34.21 7.06 33.07 6.88C32.64 6.81 31.62 6.88 31 7.01C29.58 7.31 28.33 8.07 27.25 9.25C26.73 9.84 26.1 10.85 25.69 11.74C25.53 12.08 24.84 13.43 24.71 13.66C24.58 13.9 24.46 14.09 24.06 14.7C23.45 15.67 22.11 16.92 20.66 17.89C20.52 17.99 20.23 18.2 19.99 18.37C19.76 18.55 19.39 18.81 19.18 18.97C18.96 19.12 18.66 19.33 18.49 19.44C17.97 19.83 17.17 20.35 17.01 20.45C16.92 20.5 16.75 20.6 16.64 20.68C16.36 20.86 16.11 20.95 15.97 20.93C15.54 20.85 14.87 20.52 14.26 20.18C13.72 19.89 12.65 18.99 12.37 18.61C12.33 18.54 12.19 18.38 12.07 18.24C11.87 18 11.23 17.08 10.95 16.62C10.89 16.53 10.81 16.38 10.76 16.31C10.72 16.24 10.64 16.09 10.59 15.98C10.52 15.88 10.44 15.7 10.39 15.6C10.34 15.51 10.21 15.25 10.11 15.03C10.01 14.82 9.85 14.45 9.75 14.22C9.64 14 9.52 13.74 9.48 13.65C9.41 13.44 9.34 13.31 9.19 12.99C9.12 12.86 9.01 12.62 8.94 12.49C8.87 12.35 8.77 12.14 8.72 12.05C8.67 11.95 8.58 11.79 8.53 11.67C8.34 11.28 8.16 10.98 7.55 10.07C6.37 8.32 4.23 6.45 2.71 5.83C1.99 5.53 1.6 5.47 1.49 5.61ZM34.38 9.65C34.68 9.93 34.44 10.37 34.03 10.31C33.67 10.27 33.58 9.69 33.92 9.55C34.04 9.49 34.27 9.53 34.38 9.65ZM33.08 10.51C33.08 10.76 33.15 10.89 33.44 11.19C33.53 11.29 33.6 11.37 33.58 11.37C33.5 11.37 33.25 11.19 33.17 11.07C33.03 10.87 32.92 10.39 33 10.31C33.06 10.26 33.08 10.3 33.08 10.51ZM39.87 11.05C39.94 11.13 39.53 11.23 39.33 11.19C39.22 11.16 39.13 11.17 39.07 11.2C38.96 11.24 38.24 11.31 38.28 11.26C38.33 11.22 38.75 11.13 38.97 11.12C39.11 11.12 39.28 11.08 39.37 11.05C39.49 11 39.81 11 39.87 11.05ZM28.46 16.76C29.2 16.91 29.64 17.22 29.89 17.75C30.1 18.21 30 18.83 29.61 19.41C29.24 19.94 28.2 20.89 27.57 21.28C26.84 21.72 25.29 22.39 24.22 22.71C23.95 22.79 23.58 22.92 23.41 22.97C22.8 23.18 20.74 23.74 19.62 24.03C18.99 24.19 18.34 24.35 18.16 24.4C17.84 24.48 16.12 24.91 15.33 25.09C14.65 25.25 14.68 25.15 15.78 23.65C16.47 22.73 18.51 20.61 19.36 19.94C20.78 18.82 21.36 18.48 23.16 17.68C23.8 17.39 25.57 16.85 25.87 16.85C25.98 16.85 26.29 16.8 26.55 16.74C26.8 16.68 28.18 16.71 28.46 16.76ZM30.39 20.3C30.43 20.42 30.52 20.59 30.57 20.69C31.69 23.04 33.4 24.66 35.51 25.37C36.09 25.58 36.62 25.7 37.12 25.76C37.73 25.81 37.83 25.88 37.75 26.18C37.73 26.27 37.72 26.4 37.72 26.48C37.72 26.55 37.67 26.82 37.63 27.08C37.33 28.51 36.84 29.86 36.16 31.02C36.06 31.19 35.92 31.44 35.84 31.57C35.65 31.93 35.15 32.61 34.63 33.24C32.64 35.63 29.63 37.34 26.6 37.8C26.44 37.82 26.22 37.86 26.11 37.87C25.84 37.93 23.63 37.93 23.37 37.87C23.26 37.86 23.03 37.82 22.89 37.8C21.07 37.52 19.22 36.75 18.01 35.76C17.65 35.46 16.96 34.75 16.75 34.47C16.28 33.78 16.1 33.03 16.29 32.46C16.49 31.83 16.8 31.57 17.92 31.06C19.13 30.5 19.38 30.38 20.14 30.01C21.43 29.38 23.23 28.37 23.87 27.93C23.95 27.87 24.2 27.71 24.43 27.57C26.3 26.35 27.97 24.65 28.91 22.99C29.38 22.15 29.62 21.63 29.92 20.71C30.16 19.98 30.2 19.93 30.39 20.3Z"/></svg></div>
+        <div>
+          <h1 class="brand-title">magpie UA 切换器</h1>
+        </div>
+        <div class="status-pills">
+          <span class="pill" title="本地控制面状态">
+            <span id="conn-dot" class="pill-dot"></span>
+            <span id="conn-label">已连通</span>
+            <span id="port-label" class="mono" style="opacity:0.75">127.0.0.1:3426</span>
+          </span>
+          <span class="pill" title="当前全局生效档案">
+            <span>活动档案:</span>
+            <span id="active-pill" class="pill-code">...</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="toolbar-actions">
+        <button type="button" id="btn-refresh" class="btn-sm" title="重新拉取网关状态">↻ 刷新状态</button>
+        <button type="button" id="btn-theme" class="btn-sm" title="切换深色/浅色模式">◐ 主题</button>
+        <button type="button" id="f-dn" class="btn-sm" title="缩小字号">A-</button>
+        <button type="button" id="f-up" class="btn-sm" title="放大字号">A+</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- 1. Profile Switcher Matrix -->
+    <section class="section-card">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">全局身份伪装矩阵 (Profile Switcher Matrix)</h2>
+          <p class="section-desc">一键切换发往上游中转站的 User-Agent、配套 SDK 头部（X-Stainless-* / originator / 会话三件套）及元数据特征，保存即刻热生效。</p>
+        </div>
+      </div>
+
+      <div class="meta-bar">
+        <div class="meta-path">
+          <span>配置文件：</span>
+          <code id="cfg-path" class="mono" style="color:var(--text)">加载中...</code>
+          <button type="button" id="btn-copy-path" class="btn-sm">复制路径</button>
+          <span style="margin-left:14px;color:var(--text-muted);font-size:0.9em">providers.json:</span> <code id="prov-path" class="mono" style="color:var(--text)">(自动探测)</code>
+        </div>
+        <div class="meta-toggles">
+          <label class="switch-label" title="针对 Claude Code 与 pi 档案自动向 Anthropic 请求体注入持久化 metadata.user_id">
+            <input type="checkbox" id="sw-metadata" class="switch-input" checked>
+            <span>自动注入 Claude Code <code class="mono">metadata.user_id</code></span>
+          </label>
+        </div>
+      </div>
+
+      <div id="profile-grid" class="profile-grid">加载中...</div>
+    </section>
+
+    <!-- 2. Split Grid: Provider Routing Table & Version Control -->
+    <div class="split-grid">
+
+      <!-- Provider Routing Matrix -->
+      <section class="section-card" style="margin:0">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Provider 路由与排除矩阵</h2>
+            <p class="section-desc">为指定 Provider 单独锁定伪装档案，或设为「排除」以保持 Magpie 原生默认请求头。</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="prov-filter" placeholder="搜索 Provider..." style="width:140px;padding:4px 8px">
+            <button type="button" id="save-routing" class="btn-primary btn-sm">保存路由设置</button>
+          </div>
+        </div>
+
+                <div id="prov-warn" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:var(--radius-sm);background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.25);color:#fca5a5;font-size:0.86em"></div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Provider 名称 / ID</th>
+                <th>协议</th>
+                <th>路由策略 / 独立覆盖</th>
+              </tr>
+            </thead>
+            <tbody id="prov-tbody">
+              <tr><td colspan="3" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Version Management Console -->
+      <section class="section-card" style="margin:0">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">客户端版本控制与钉死</h2>
+            <p class="section-desc">优先级：手动固定 (Pin) &gt; 本机 ASAR 探测 &gt; npm 自动同步 &gt; 官方内置。</p>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button type="button" id="fetch-ver" class="btn-sm">☁️ 从 npm 刷新</button>
+            <button type="button" id="save-ver" class="btn-primary btn-sm">保存固定版本</button>
+          </div>
+        </div>
+
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>客户端键</th>
+                <th>当前生效 / 来源</th>
+                <th>手动固定版本 (Pin)</th>
+              </tr>
+            </thead>
+            <tbody id="ver-tbody">
+              <tr><td colspan="3" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- 3. Custom Profile Studio -->
+    <section class="section-card">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">自定义预设工坊 (Custom Profile Studio)</h2>
+          <p class="section-desc">构建您专属的 User-Agent 与分协议请求头组合（受保护头如 Authorization / Host 会被自动安全拦截）。</p>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button type="button" id="add-cp" class="btn-sm">+ 新建自定义预设</button>
+          <button type="button" id="save-cp" class="btn-primary btn-sm">保存所有自定义预设</button>
+        </div>
+      </div>
+
+      <div id="cp-list"></div>
+    </section>
+
+  </main>
+
+  <!-- Toast Container -->
+  <div class="toast-wrap">
+    <div id="status" class="toast"></div>
+  </div>
+
+  <!-- Live Audit Stream Bottom Drawer -->
+  <footer id="audit-dock" class="audit-dock">
+    <div id="audit-toggle" class="audit-bar">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="badge badge-active">LIVE STREAM</span>
+        <span style="font-weight:600">网关实时审计与自愈事件流</span>
+        <span id="audit-summary" class="mono" style="color:var(--text-muted);font-size:0.9em">点击展开控制台日志...</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="dock-arrow" style="color:var(--text-muted)">▲ 展开</span>
+      </div>
+    </div>
+    <div class="audit-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;gap:12px;align-items:center">
+          <label class="switch-label">
+            <input type="checkbox" id="sw-poll" class="switch-input" checked>
+            <span>每 3 秒自动同步状态流</span>
+          </label>
+        </div>
+        <button type="button" id="btn-clear-log" class="btn-sm">清空本地视图</button>
+      </div>
+      <div id="audit-lines"></div>
+    </div>
+  </footer>
+
+  <script>
+    let S = null;
+    let localLogs = [];
+    let pollTimer = null;
+    const $ = (s) => document.querySelector(s);
+
+    const esc = (s) =>
+      String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[c]));
+
+    const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
+    const FORBIDDEN_HEADERS = new Set([
+      "host", "authorization", "proxy-authorization", "x-api-key",
+      "content-length", "transfer-encoding", "connection"
+    ]);
+
+        const ICONS = {
+      "off": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"display:block\"><path d=\"M18.36 6.64a9 9 0 1 1-12.73 0\"></path><line x1=\"12\" y1=\"2\" x2=\"12\" y2=\"12\"></line></svg>",
+      "claude-code": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" style=\"display:block\"><title>Claude Code</title><path clip-rule=\"evenodd\" d=\"M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z\" fill=\"#D97757\" fill-rule=\"evenodd\"></path></svg>",
+      "codex": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" style=\"display:block\"><title>Codex</title><path d=\"M19.503 0H4.496A4.496 4.496 0 000 4.496v15.007A4.496 4.496 0 004.496 24h15.007A4.496 4.496 0 0024 19.503V4.496A4.496 4.496 0 0019.503 0z\" fill=\"#fff\"></path><path d=\"M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.81 5.81 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388zm3.482 10.565a.637.637 0 000 1.272h3.636a.637.637 0 100-1.272h-3.636zM8.462 9.23a.637.637 0 00-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 101.095.649l1.454-2.455a.636.636 0 00.005-.64L8.462 9.23z\" fill=\"url(#lobe-icons-codex-_R_0_)\"></path><defs><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-codex-_R_0_\" x1=\"12\" x2=\"12\" y1=\"3\" y2=\"21\"><stop stop-color=\"#B1A7FF\"></stop><stop offset=\".5\" stop-color=\"#7A9DFF\"></stop><stop offset=\"1\" stop-color=\"#3941FF\"></stop></linearGradient></defs></svg>",
+      "pi": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" style=\"display:block\"><title>Pi</title><path clip-rule=\"evenodd\" d=\"M1 1h16.5v11H12v5.5H6.5V23H1V1zm5.5 5.5V12H12V6.5H6.5z\"></path><path d=\"M17.5 12H23v11h-5.5V12z\"></path></svg>",
+      "zcode": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" style=\"display:block\"><title>Zhipu</title><path d=\"M11.991 23.503a.24.24 0 00-.244.248.24.24 0 00.244.249.24.24 0 00.245-.249.24.24 0 00-.22-.247l-.025-.001zM9.671 5.365a1.697 1.697 0 011.099 2.132l-.071.172-.016.04-.018.054c-.07.16-.104.32-.104.498-.035.71.47 1.279 1.186 1.314h.366c1.309.053 2.338 1.173 2.286 2.523-.052 1.332-1.152 2.38-2.478 2.327h-.174c-.715.018-1.274.64-1.239 1.368 0 .124.018.23.053.337.209.373.54.658.96.8.75.23 1.517-.125 1.9-.782l.018-.035c.402-.64 1.17-.96 1.92-.711.854.284 1.378 1.226 1.099 2.167a1.661 1.661 0 01-2.077 1.102 1.711 1.711 0 01-.907-.711l-.017-.035c-.2-.323-.463-.58-.851-.711l-.056-.018a1.646 1.646 0 00-1.954.746 1.66 1.66 0 01-1.065.764 1.677 1.677 0 01-1.989-1.279c-.209-.906.332-1.83 1.257-2.043a1.51 1.51 0 01.296-.035h.018c.68-.071 1.151-.622 1.116-1.333a1.307 1.307 0 00-.227-.693 2.515 2.515 0 01-.366-1.403 2.39 2.39 0 01.366-1.208c.14-.195.21-.444.227-.693.018-.71-.506-1.261-1.186-1.332l-.07-.018a1.43 1.43 0 01-.299-.07l-.05-.019a1.7 1.7 0 01-1.047-2.114 1.68 1.68 0 012.094-1.101zm-5.575 10.11c.26-.264.639-.367.994-.27.355.096.633.379.728.74.095.362-.007.748-.267 1.013-.402.41-1.053.41-1.455 0a1.062 1.062 0 010-1.482zm14.845-.294c.359-.09.738.024.992.297.254.274.344.665.237 1.025-.107.36-.396.634-.756.718-.551.128-1.1-.22-1.23-.781a1.05 1.05 0 01.757-1.26zm-.064-4.39c.314.32.49.753.49 1.206 0 .452-.176.886-.49 1.206-.315.32-.74.5-1.185.5-.444 0-.87-.18-1.184-.5a1.727 1.727 0 010-2.412 1.654 1.654 0 012.369 0zm-11.243.163c.364.484.447 1.128.218 1.691a1.665 1.665 0 01-2.188.923c-.855-.36-1.26-1.358-.907-2.228a1.68 1.68 0 011.33-1.038c.593-.08 1.183.169 1.547.652zm11.545-4.221c.368 0 .708.2.892.524.184.324.184.724 0 1.048a1.026 1.026 0 01-.892.524c-.568 0-1.03-.47-1.03-1.048 0-.579.462-1.048 1.03-1.048zm-14.358 0c.368 0 .707.2.891.524.184.324.184.724 0 1.048a1.026 1.026 0 01-.891.524c-.569 0-1.03-.47-1.03-1.048 0-.579.461-1.048 1.03-1.048zm10.031-1.475c.925 0 1.675.764 1.675 1.706s-.75 1.705-1.675 1.705-1.674-.763-1.674-1.705c0-.942.75-1.706 1.674-1.706zm-2.626-.684c.362-.082.653-.356.761-.718a1.062 1.062 0 00-.238-1.028 1.017 1.017 0 00-.996-.294c-.547.14-.881.7-.752 1.257.13.558.675.907 1.225.783zm0 16.876c.359-.087.644-.36.75-.72a1.062 1.062 0 00-.237-1.019 1.018 1.018 0 00-.985-.301 1.037 1.037 0 00-.762.717c-.108.361-.017.754.239 1.028.245.263.606.377.953.305l.043-.01zM17.19 3.5a.631.631 0 00.628-.64c0-.355-.279-.64-.628-.64a.631.631 0 00-.628.64c0 .355.28.64.628.64zm-10.38 0a.631.631 0 00.628-.64c0-.355-.28-.64-.628-.64a.631.631 0 00-.628.64c0 .355.279.64.628.64zm-5.182 7.852a.631.631 0 00-.628.64c0 .354.28.639.628.639a.63.63 0 00.627-.606l.001-.034a.62.62 0 00-.628-.64zm5.182 9.13a.631.631 0 00-.628.64c0 .355.279.64.628.64a.631.631 0 00.628-.64c0-.355-.28-.64-.628-.64zm10.38.018a.631.631 0 00-.628.64c0 .355.28.64.628.64a.631.631 0 00.628-.64c0-.355-.279-.64-.628-.64zm5.182-9.148a.631.631 0 00-.628.64c0 .354.279.639.628.639a.631.631 0 00.628-.64c0-.355-.28-.64-.628-.64zm-.384-4.992a.24.24 0 00.244-.249.24.24 0 00-.244-.249.24.24 0 00-.244.249c0 .142.122.249.244.249zM11.991.497a.24.24 0 00.245-.248A.24.24 0 0011.99 0a.24.24 0 00-.244.249c0 .133.108.236.223.247l.021.001zM2.011 6.36a.24.24 0 00.245-.249.24.24 0 00-.244-.249.24.24 0 00-.244.249.24.24 0 00.244.249zm0 11.263a.24.24 0 00-.243.248.24.24 0 00.244.249.24.24 0 00.244-.249.252.252 0 00-.244-.248zm19.995-.018a.24.24 0 00-.245.248.24.24 0 00.245.25.24.24 0 00.244-.25.252.252 0 00-.244-.248z\" fill=\"#3859FF\" fill-rule=\"nonzero\"></path></svg>",
+      "opencode": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" style=\"display:block\"><title>opencode</title><path d=\"M16 6H8v12h8V6zm4 16H4V2h16v20z\"></path></svg>",
+      "antigravity": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" style=\"display:block\"><title>Antigravity</title><mask height=\"23\" id=\"lobe-icons-antigravity-0-_R_0_\" maskUnits=\"userSpaceOnUse\" width=\"24\" x=\"0\" y=\"1\"><path d=\"M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z\" fill=\"#fff\"></path></mask><g mask=\"url(#lobe-icons-antigravity-0-_R_0_)\"><g filter=\"url(#lobe-icons-antigravity-1-_R_0_)\"><path d=\"M-1.018-3.992c-.408 3.591 2.686 6.89 6.91 7.37 4.225.48 7.98-2.043 8.387-5.633.408-3.59-2.686-6.89-6.91-7.37-4.225-.479-7.98 2.043-8.387 5.633z\" fill=\"#FFE432\"></path></g><g filter=\"url(#lobe-icons-antigravity-2-_R_0_)\"><path d=\"M15.269 7.747c1.058 4.557 5.691 7.374 10.348 6.293 4.657-1.082 7.575-5.653 6.516-10.21-1.058-4.556-5.691-7.374-10.348-6.292-4.657 1.082-7.575 5.653-6.516 10.21z\" fill=\"#FC413D\"></path></g><g filter=\"url(#lobe-icons-antigravity-3-_R_0_)\"><path d=\"M-12.443 10.804c1.338 4.703 7.36 7.11 13.453 5.378 6.092-1.733 9.947-6.95 8.61-11.652C8.282-.173 2.26-2.58-3.833-.848-9.925.884-13.78 6.1-12.443 10.804z\" fill=\"#00B95C\"></path></g><g filter=\"url(#lobe-icons-antigravity-4-_R_0_)\"><path d=\"M-12.443 10.804c1.338 4.703 7.36 7.11 13.453 5.378 6.092-1.733 9.947-6.95 8.61-11.652C8.282-.173 2.26-2.58-3.833-.848-9.925.884-13.78 6.1-12.443 10.804z\" fill=\"#00B95C\"></path></g><g filter=\"url(#lobe-icons-antigravity-5-_R_0_)\"><path d=\"M-7.608 14.703c3.352 3.424 9.126 3.208 12.896-.483 3.77-3.69 4.108-9.459.756-12.883C2.69-2.087-3.083-1.871-6.853 1.82c-3.77 3.69-4.108 9.458-.755 12.883z\" fill=\"#00B95C\"></path></g><g filter=\"url(#lobe-icons-antigravity-6-_R_0_)\"><path d=\"M9.932 27.617c1.04 4.482 5.384 7.303 9.7 6.3 4.316-1.002 6.971-5.448 5.93-9.93-1.04-4.483-5.384-7.304-9.7-6.301-4.316 1.002-6.971 5.448-5.93 9.93z\" fill=\"#3186FF\"></path></g><g filter=\"url(#lobe-icons-antigravity-7-_R_0_)\"><path d=\"M2.572-8.185C.392-3.329 2.778 2.472 7.9 4.771c5.122 2.3 11.042.227 13.222-4.63 2.18-4.855-.205-10.656-5.327-12.955-5.122-2.3-11.042-.227-13.222 4.63z\" fill=\"#FBBC04\"></path></g><g filter=\"url(#lobe-icons-antigravity-8-_R_0_)\"><path d=\"M-3.267 38.686c-5.277-2.072 3.742-19.117 5.984-24.83 2.243-5.712 8.34-8.664 13.616-6.592 5.278 2.071 11.533 13.482 9.29 19.195-2.242 5.713-23.613 14.298-28.89 12.227z\" fill=\"#3186FF\"></path></g><g filter=\"url(#lobe-icons-antigravity-9-_R_0_)\"><path d=\"M28.71 17.471c-1.413 1.649-5.1.808-8.236-1.878-3.135-2.687-4.531-6.201-3.118-7.85 1.412-1.649 5.1-.808 8.235 1.878s4.532 6.2 3.119 7.85z\" fill=\"#749BFF\"></path></g><g filter=\"url(#lobe-icons-antigravity-10-_R_0_)\"><path d=\"M18.163 9.077c5.81 3.93 12.502 4.19 14.946.577 2.443-3.612-.287-9.727-6.098-13.658-5.81-3.931-12.502-4.19-14.946-.577-2.443 3.612.287 9.727 6.098 13.658z\" fill=\"#FC413D\"></path></g><g filter=\"url(#lobe-icons-antigravity-11-_R_0_)\"><path d=\"M-.915 2.684c-1.44 3.473-.97 6.967 1.05 7.804 2.02.837 4.824-1.3 6.264-4.772 1.44-3.473.97-6.967-1.05-7.804-2.02-.837-4.824 1.3-6.264 4.772z\" fill=\"#FFEE48\"></path></g></g><defs><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"17.587\" id=\"lobe-icons-antigravity-1-_R_0_\" width=\"19.838\" x=\"-3.288\" y=\"-11.917\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"1.117\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"38.565\" id=\"lobe-icons-antigravity-2-_R_0_\" width=\"38.9\" x=\"4.251\" y=\"-13.493\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"5.4\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"36.517\" id=\"lobe-icons-antigravity-3-_R_0_\" width=\"40.955\" x=\"-21.889\" y=\"-10.592\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"4.591\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"36.517\" id=\"lobe-icons-antigravity-4-_R_0_\" width=\"40.955\" x=\"-21.889\" y=\"-10.592\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"4.591\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"36.595\" id=\"lobe-icons-antigravity-5-_R_0_\" width=\"36.632\" x=\"-19.099\" y=\"-10.278\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"4.591\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"34.087\" id=\"lobe-icons-antigravity-6-_R_0_\" width=\"33.533\" x=\".981\" y=\"8.758\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"4.363\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"35.276\" id=\"lobe-icons-antigravity-7-_R_0_\" width=\"35.978\" x=\"-6.143\" y=\"-21.659\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"3.954\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"46.523\" id=\"lobe-icons-antigravity-8-_R_0_\" width=\"45.114\" x=\"-11.96\" y=\"-.46\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"3.531\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"24.054\" id=\"lobe-icons-antigravity-9-_R_0_\" width=\"25.094\" x=\"10.485\" y=\".58\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"3.159\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"30.007\" id=\"lobe-icons-antigravity-10-_R_0_\" width=\"33.508\" x=\"5.833\" y=\"-12.467\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"2.669\"></feGaussianBlur></filter><filter color-interpolation-filters=\"sRGB\" filterUnits=\"userSpaceOnUse\" height=\"26.151\" id=\"lobe-icons-antigravity-11-_R_0_\" width=\"22.194\" x=\"-8.355\" y=\"-8.876\"><feFlood flood-opacity=\"0\" result=\"BackgroundImageFix\"></feFlood><feBlend in=\"SourceGraphic\" in2=\"BackgroundImageFix\" result=\"shape\"></feBlend><feGaussianBlur result=\"effect1_foregroundBlur_977_115\" stdDeviation=\"3.303\"></feGaussianBlur></filter></defs></svg>",
+      "custom": "<svg viewBox=\"0 0 24 24\" width=\"100%\" height=\"100%\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"display:block\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"></rect><line x1=\"3\" y1=\"9\" x2=\"21\" y2=\"9\"></line><line x1=\"9\" y1=\"21\" x2=\"9\" y2=\"9\"></line></svg>"
+    };
+
+    const PROFILE_META = {
+      "off": {
+        icon: ICONS["off"],
+        wire: "Pass-Through",
+        desc: "清空插件注入的所有伪装头，100% 还原 Magpie 原生默认状态"
+      },
+      "claude-code": {
+        icon: ICONS["claude-code"],
+        wire: "Anthropic CLI",
+        desc: "注入 claude-cli UA、X-App: cli、全套 X-Stainless-* 及持久化 metadata.user_id"
+      },
+      "codex": {
+        icon: ICONS["codex"],
+        wire: "OpenAI Rust",
+        desc: "模拟官方 Rust 版 Codex CLI，携带 originator: codex_cli_rs 与实验性 Responses 头"
+      },
+      "pi": {
+        icon: ICONS["pi"],
+        wire: "Dual Adaptive",
+        desc: "双形态自适应：对 Anthropic 端点呈现 claude-cli，对 OpenAI 端点呈现 pi"
+      },
+      "zcode": {
+        icon: ICONS["zcode"],
+        wire: "Anthropic SDK",
+        desc: "模拟智谱 ZCode 客户端，携带 ai-sdk 标识并自动关联本机真实 X-Device-Mid"
+      },
+      "opencode": {
+        icon: ICONS["opencode"],
+        wire: "Bun Runtime",
+        desc: "模拟 opencode 默认 Bun 运行时 UA，自动附带进程级固定会话三件套 (ses_<64hex>)"
+      },
+      "antigravity": {
+        icon: ICONS["antigravity"],
+        wire: "Google Hub",
+        desc: "自动解构本机安装的 Antigravity app.asar 真实版本号与对应构建 CL 标识"
+      }
+    };
+
+    function addLocalLog(text, level = "info") {
+      localLogs.unshift({
+        ts: new Date().toLocaleTimeString(),
+        level,
+        text
+      });
+      if (localLogs.length > 80) localLogs.pop();
+      renderAuditLogs();
+    }
+
+    let toastTimer = null;
+    function toast(msg, err = false) {
+      const el = $("#status");
+      el.textContent = msg;
+      el.className = "toast show" + (err ? " err" : "");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.className = "toast"; }, 3200);
+      addLocalLog(msg, err ? "error" : "ok");
+    }
+
+    const MOCK_STATE = {
+      plugin: "ua-switcher",
+      profile: "claude-code",
+      port: 3426,
+      injectMetadata: true,
+      autoVersions: true,
+      configPath: "C:\\Users\\Lenovo\\.config\\magpie\\ua-switcher.json",
+      providersPath: "C:\\Users\\Lenovo\\.config\\magpie\\providers.json",
+      providersError: null,
+      profiles: [
+        { id: "off", label: "关闭" },
+        { id: "claude-code", label: "Claude Code" },
+        { id: "codex", label: "Codex (CLI)" },
+        { id: "pi", label: "Pi" },
+        { id: "zcode", label: "ZCode" },
+        { id: "opencode", label: "OpenCode" },
+        { id: "antigravity", label: "Antigravity" }
+      ],
+      providers: [
+        { id: "zcode", name: "ZCode（插件 provider）", off: false, wire: "anthropic" },
+        { id: "astr", name: "astr (Claude/OpenAI中转)", off: false, wire: "anthropic" },
+        { id: "workbuddy", name: "workbuddy (企业网关)", off: false, wire: "anthropic" },
+        { id: "trae", name: "trae", off: false, wire: "anthropic" },
+        { id: "qoder", name: "qoder", off: false, wire: "anthropic" }
+      ],
+      versions: {
+        autoVersions: true,
+        updateEveryHours: 24,
+        fetchedAt: Date.now() - 3600000,
+        values: {
+          "claude-code": { inUse: "2.1.310", source: "builtin", npm: "@anthropic-ai/claude-code", npmLatest: "2.1.310" },
+          "codex": { inUse: "0.164.0", source: "builtin", npm: "@openai/codex", npmLatest: "0.164.0" },
+          "pi": { inUse: "2.1.75", source: "builtin", npm: null, npmLatest: null },
+          "zcode": { inUse: "3.16.3", source: "builtin", npm: null, npmLatest: null },
+          "aiSdk": { inUse: "3.0.81", source: "builtin", npm: null, npmLatest: null },
+          "bun": { inUse: "1.4.4", source: "builtin", npm: null, npmLatest: null },
+          "antigravity": { inUse: "2.26.0", source: "detected", npm: null, npmLatest: null }
+        }
+      },
+      pins: {},
+      resolvedProfiles: {
+        "off": { ua: "Magpie default upstream headers (no rewrite)" },
+        "claude-code": { ua: "claude-cli/2.1.310 (external, cli)" },
+        "codex": { ua: "codex_cli_rs/0.164.0 (Windows NT 10.0; Win64; x64) responses=experimental" },
+        "pi": { ua: "claude-cli/2.1.75 (Anthropic) | pi/2.1.75 (OpenAI)" },
+        "zcode": { ua: "ZCode/3.16.3 ai-sdk/anthropic/3.0.81 (Windows; AMD64)" },
+        "opencode": { ua: "Bun/1.4.4 (+https://github.com/yetone/magpie)" },
+        "antigravity": { ua: "antigravity/hub/2.26.0 (aidev_client; Windows NT 10.0)" }
+      },
+      customProfiles: {},
+      events: [
+        { ts: new Date(Date.now() - 120000).toISOString(), level: "info", message: "系统启动，加载配置完成 (当前活动档案: claude-code)" },
+        { ts: new Date(Date.now() - 60000).toISOString(), level: "info", message: "探测到本机 Antigravity app.asar 版本号 2.26.0" }
+      ]
+    };
+
+    let isOfflinePreview = false;
+
+    async function load(silent = false) {
+      try {
+        if (window.location.protocol === "file:") throw new Error("file protocol preview");
+        const r = await fetch("/state");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        S = await r.json();
+        isOfflinePreview = false;
+        $("#conn-dot").className = "pill-dot";
+        $("#conn-label").textContent = "网关已连通";
+        render();
+        if (!silent) addLocalLog("已同步网关状态 (当前活动档案: " + S.profile + ")", "info");
+      } catch (e) {
+        if (!S) {
+          S = JSON.parse(JSON.stringify(MOCK_STATE));
+          isOfflinePreview = true;
+          $("#conn-dot").className = "pill-dot off";
+          $("#conn-label").textContent = window.location.protocol === "file:" ? "本地静态预览模式" : "离线预览模式";
+          render();
+          if (!silent) toast(window.location.protocol === "file:" ? "已进入本地静态演示预览模式" : "无法连接至 switcher 服务，已载入预览数据", false);
+        } else {
+          $("#conn-dot").className = "pill-dot off";
+          $("#conn-label").textContent = "连接断开";
+          if (!silent) toast("无法连接至 switcher 服务", true);
+        }
+      }
+    }
+
+    function getVersionValues() {
+      if (!S || !S.versions) return {};
+      if (S.versions.values && typeof S.versions.values === "object") return S.versions.values;
+      // Fallback compatibility if versions uses flat maps
+      const out = {};
+      const inUse = S.versions.inUse || {};
+      const src = S.versions.source || {};
+      const latest = S.versions.latest || {};
+      for (const k of Object.keys(inUse)) {
+        out[k] = { inUse: inUse[k], source: src[k] || "builtin", npmLatest: latest[k] || null };
+      }
+      return out;
+    }
+
+    function previewUaFor(id, verMap) {
+      if (id === "off") return "Magpie default upstream headers (no rewrite)";
+      if (S.resolvedProfiles && S.resolvedProfiles[id] && S.resolvedProfiles[id].ua) {
+        return S.resolvedProfiles[id].ua;
+      }
+      if (S.customProfiles && S.customProfiles[id] && S.customProfiles[id].ua) {
+        return S.customProfiles[id].ua;
+      }
+      const v = (k, def) => (verMap[k] && verMap[k].inUse) || def;
+      if (id === "claude-code") return `claude-cli/${v("claude-code", "2.1.310")} (external, cli)`;
+      if (id === "codex") return `codex_cli_rs/${v("codex", "0.164.0")} (...)`;
+      if (id === "pi") return `claude-cli/${v("pi", "2.1.75")} | pi (...)`;
+      if (id === "zcode") return `ZCode/${v("zcode", "3.16.3")} ai-sdk/anthropic/${v("aiSdk", "3.0.81")}`;
+      if (id === "opencode") return `Bun/${v("bun", "1.4.4")} + x-opencode-session-id`;
+      if (id === "antigravity") return `antigravity/hub/${v("antigravity", "2.26.0")} (aidev_client; ...)`;
+      return id;
+    }
+
+    function render() {
+      if (!S) return;
+      $("#cfg-path").textContent = S.configPath || "~/.config/magpie/ua-switcher.json";
+      const ppEl = $("#prov-path");
+      if (ppEl) ppEl.textContent = S.providersPath || "(自动探测)";
+      const pwEl = $("#prov-warn");
+      if (pwEl) {
+        if (S.providersError) {
+          pwEl.style.display = "block";
+          pwEl.innerHTML = '⚠️ <strong>读取 providers.json 失败</strong>（<code class="mono">' + esc(S.providersPath || "未知路径") + '</code>: ' + esc(S.providersError) + '）。下方仅展示插件自带的 zcode，原生 provider 也未被改写。若 magpie 配置在别处，请指定环境变量 <code class="mono">UA_SWITCHER_PROVIDERS</code>。';
+        } else {
+          pwEl.style.display = "none";
+        }
+      }
+      $("#port-label").textContent = "127.0.0.1:" + (S.port || 3426);
+      $("#active-pill").textContent = S.profile || "off";
+      $("#sw-metadata").checked = S.injectMetadata !== false;
+
+      const verMap = getVersionValues();
+
+      // 1. Render Profile Switcher Bento Grid
+      const g = $("#profile-grid");
+      g.innerHTML = (S.profiles || []).map((p) => {
+        const isActive = S.profile === p.id;
+        const meta = PROFILE_META[p.id] || {
+          icon: ICONS.custom,
+          wire: "Custom Profile",
+          desc: "用户自定义 User-Agent 与配套请求头预设"
+        };
+        const uaPreview = previewUaFor(p.id, verMap);
+        const vEntry = verMap[p.id];
+        return `
+          <div class="p-card ${isActive ? "active" : ""}" data-prof="${esc(p.id)}" role="button" tabindex="0">
+            <div>
+              <div class="p-card-top">
+                <div class="p-icon-wrap">
+                  <div class="p-icon" title="${esc(p.label)}">${meta.icon || ICONS.custom}</div>
+                  <div>
+                    <div class="p-name">
+                      <span>${esc(p.label)}</span>
+                    </div>
+                    <div class="p-id-tag">${esc(p.id)} · ${esc(meta.wire)}</div>
+                  </div>
+                </div>
+                <div class="p-badges">
+                  ${vEntry ? `<span class="badge badge-muted">v${esc(vEntry.inUse)}</span>` : ""}
+                  ${isActive ? `<span class="badge badge-active">ACTIVE</span>` : ""}
+                </div>
+              </div>
+              <div class="p-desc">${esc(meta.desc)}</div>
+            </div>
+            <div class="p-ua-box" title="${esc(uaPreview)}">
+              <span style="overflow:hidden;text-overflow:ellipsis">${esc(uaPreview)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      g.querySelectorAll(".p-card").forEach((card) => {
+        card.onclick = async () => {
+          const v = card.dataset.prof;
+          if (!v || v === S.profile) return;
+          const prev = S.profile;
+          S.profile = v;
+          render();
+          if (isOfflinePreview) {
+            toast("演示模式：已在前端预览档案 [" + v + "]（实机生效需运行 Magpie 插件）");
+            return;
+          }
+          try {
+            const r = await fetch("/set/" + encodeURIComponent(v), { method: "POST" });
+            if (!r.ok) throw new Error();
+            toast("全局预设已切换为：" + v);
+            load(true);
+          } catch {
+            S.profile = prev;
+            render();
+            toast("切换失败，已回滚", true);
+          }
+        };
+      });
+
+      // 2. Render Unified Provider Routing Table
+      renderProviderTable();
+
+      // 3. Render Version Table
+      const verTbody = $("#ver-tbody");
+      const verEntries = Object.entries(verMap);
+      if (!verEntries.length) {
+        verTbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">暂无版本信息</td></tr>`;
+      } else {
+        const srcBadge = (src) => {
+          if (src === "pinned") return `<span class="badge badge-pin">手动锁定</span>`;
+          if (src === "detected") return `<span class="badge badge-detected">本机 ASAR</span>`;
+          if (src === "fetched") return `<span class="badge badge-fetched">npm 同步</span>`;
+          return `<span class="badge badge-muted">官方内置</span>`;
+        };
+        verTbody.innerHTML = verEntries.map(([k, v]) => {
+          const pinnedVal = (S.pins && S.pins[k]) || "";
+          const hasNewer = v.npmLatest && v.npmLatest !== v.inUse;
+          return `
+            <tr>
+              <td>
+                <div class="mono" style="font-weight:600">${esc(k)}</div>
+                ${v.npm ? `<div class="mono" style="font-size:0.78em;color:var(--text-muted)">${esc(v.npm)}</div>` : ""}
+              </td>
+              <td>
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                  <span class="mono" style="font-weight:600">${esc(v.inUse)}</span>
+                  ${srcBadge(v.source)}
+                </div>
+                ${hasNewer ? `<div style="font-size:0.78em;color:var(--primary-hover);margin-top:2px">npm 最新: <code class="mono">${esc(v.npmLatest)}</code></div>` : ""}
+              </td>
+              <td>
+                <div style="display:flex;gap:4px;align-items:center">
+                  <input type="text" class="ver-pin mono" data-key="${esc(k)}" value="${esc(pinnedVal)}" placeholder="如 2.1.310" style="width:105px;padding:4px 8px">
+                  ${pinnedVal ? `<button type="button" class="btn-sm btn-clear-pin" data-key="${esc(k)}" title="清除锁定">✕</button>` : ""}
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join("");
+
+        verTbody.querySelectorAll(".btn-clear-pin").forEach((btn) => {
+          btn.onclick = () => {
+            const input = verTbody.querySelector(`.ver-pin[data-key="${CSS.escape(btn.dataset.key)}"]`);
+            if (input) input.value = "";
+          };
+        });
+      }
+
+      // 4. Render Custom Profiles
+      renderCustomProfiles();
+
+      // 5. Render Audit Logs
+      renderAuditLogs();
+    }
+
+    function renderProviderTable() {
+      if (!S) return;
+      const q = ($("#prov-filter")?.value || "").trim().toLowerCase();
+      const tbody = $("#prov-tbody");
+      const list = (S.providers || []).filter((p) =>
+        !q || p.id.toLowerCase().includes(q) || (p.name && p.name.toLowerCase().includes(q))
+      );
+
+      if (!list.length) {
+        tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">无匹配的 Provider</td></tr>`;
+        return;
+      }
+
+      const profOpts = (S.profiles || []).filter((o) => o.id !== "off");
+      tbody.innerHTML = list.map((p) => {
+        const isExcluded = (S.excludeProviders || []).includes(p.id);
+        const override = (S.providerOverrides && S.providerOverrides[p.id]) || "";
+        const modeVal = isExcluded ? "__exclude__" : (override || "__global__");
+        return `
+          <tr>
+            <td>
+              <div style="font-weight:500">${esc(p.name)}</div>
+              <div class="mono" style="font-size:0.8em;color:var(--text-muted)">${esc(p.id)}</div>
+            </td>
+            <td>
+              <span class="badge badge-muted">${esc(p.wire || "other")}</span>
+            </td>
+            <td>
+              <select class="prov-route-sel" data-id="${esc(p.id)}" style="width:100%;max-width:230px">
+                <option value="__global__" ${modeVal === "__global__" ? "selected" : ""}>🔗 跟随全局 (${esc(S.profile)})</option>
+                <option value="__exclude__" ${modeVal === "__exclude__" ? "selected" : ""}>🛡️ 排除 (保持 Magpie 原生)</option>
+                <optgroup label="单独锁定为指定档案">
+                  ${profOpts.map((o) => `<option value="${esc(o.id)}" ${modeVal === o.id ? "selected" : ""}>🎯 锁定: ${esc(o.label)} (${esc(o.id)})</option>`).join("")}
+                </optgroup>
+              </select>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function flattenCustomHeaders(headersObj) {
+      const rows = [];
+      if (!headersObj || typeof headersObj !== "object") return rows;
+      for (const proto of ["any", "anthropic", "openai"]) {
+        const grp = headersObj[proto];
+        if (grp && typeof grp === "object") {
+          for (const [k, v] of Object.entries(grp)) {
+            rows.push({ proto, k, v: String(v) });
+          }
+        }
+      }
+      return rows;
+    }
+
+    function renderCustomProfiles() {
+      const cp = (S && S.customProfiles) || {};
+      const list = $("#cp-list");
+      const entries = Object.entries(cp);
+      if (!entries.length) {
+        list.innerHTML = `<div style="padding:18px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:var(--radius-md)">暂无自定义预设，点击右上角「+ 新建自定义预设」即可创建。</div>`;
+        return;
+      }
+
+      list.innerHTML = entries.map(([id, p]) => {
+        const hdrRows = flattenCustomHeaders(p.headers || (p.raw && p.raw.headers));
+        return `
+          <div class="cp-item cp-card" data-id="${esc(id)}">
+            <div class="cp-row">
+              <span class="badge badge-fetched mono">ID: ${esc(id)}</span>
+              <input type="text" class="cp-lbl" value="${esc(p.label || id)}" placeholder="预设显示名称" style="flex:1;min-width:160px">
+              <button type="button" class="btn-sm cp-add-hdr">+ 添加 Header</button>
+              <button type="button" class="btn-sm btn-danger cp-del">删除预设</button>
+            </div>
+            <div class="cp-row" style="margin-bottom:0">
+              <input type="text" class="cp-ua mono" value="${esc(p.ua || "")}" placeholder="User-Agent 字符串 (1-512 字符)" style="width:100%" ${p.forms ? "disabled title='多形态 forms 预设保持原结构'" : ""}>
+            </div>
+            <div class="hdr-list">
+              ${hdrRows.map((r) => `
+                <div class="hdr-row">
+                  <select class="hdr-proto">
+                    <option value="any" ${r.proto === "any" ? "selected" : ""}>any (全协议)</option>
+                    <option value="anthropic" ${r.proto === "anthropic" ? "selected" : ""}>anthropic</option>
+                    <option value="openai" ${r.proto === "openai" ? "selected" : ""}>openai</option>
+                  </select>
+                  <input type="text" class="hdr-k mono" value="${esc(r.k)}" placeholder="Header 名称 (如 X-Tag)">
+                  <input type="text" class="hdr-v mono" value="${esc(r.v)}" placeholder="Header 值">
+                  <button type="button" class="btn-sm btn-danger hdr-rm">✕</button>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      list.querySelectorAll(".cp-del").forEach((btn) => {
+        btn.onclick = () => {
+          const card = btn.closest(".cp-card");
+          delete S.customProfiles[card.dataset.id];
+          renderCustomProfiles();
+        };
+      });
+
+      list.querySelectorAll(".cp-add-hdr").forEach((btn) => {
+        btn.onclick = () => {
+          const card = btn.closest(".cp-card");
+          const hdrList = card.querySelector(".hdr-list");
+          const div = document.createElement("div");
+          div.className = "hdr-row";
+          div.innerHTML = `
+            <select class="hdr-proto">
+              <option value="any">any (全协议)</option>
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai</option>
+            </select>
+            <input type="text" class="hdr-k mono" placeholder="Header 名称 (如 X-Custom-Client)">
+            <input type="text" class="hdr-v mono" placeholder="Header 值">
+            <button type="button" class="btn-sm btn-danger hdr-rm">✕</button>
+          `;
+          div.querySelector(".hdr-rm").onclick = () => div.remove();
+          hdrList.appendChild(div);
+        };
+      });
+
+      list.querySelectorAll(".hdr-rm").forEach((btn) => {
+        btn.onclick = () => btn.closest(".hdr-row").remove();
+      });
+    }
+
+    function renderAuditLogs() {
+      const serverEvents = (S && Array.isArray(S.events) ? S.events : []).map((e) => ({
+        ts: e.ts ? new Date(e.ts).toLocaleTimeString() : "",
+        level: e.level || "info",
+        text: e.text || ""
+      }));
+      const combined = [...localLogs, ...serverEvents].slice(0, 60);
+      const wrap = $("#audit-lines");
+      if (!combined.length) {
+        wrap.innerHTML = `<div style="color:var(--text-muted);padding:8px 0">暂无日志记录</div>`;
+        return;
+      }
+      $("#audit-summary").textContent = `最新: ${combined[0].text}`;
+      wrap.innerHTML = combined.map((item) => `
+        <div class="log-line">
+          <span class="log-ts">${esc(item.ts)}</span>
+          <span class="log-lvl ${esc(item.level)}">${esc(String(item.level).toUpperCase())}</span>
+          <span style="word-break:break-all">${esc(item.text)}</span>
+        </div>
+      `).join("");
+    }
+
+    // Event Bindings
+    $("#prov-filter").oninput = () => renderProviderTable();
+
+    $("#btn-refresh").onclick = () => load(false);
+
+    $("#btn-copy-path").onclick = async () => {
+      try {
+        await navigator.clipboard.writeText($("#cfg-path").textContent);
+        toast("配置文件路径已复制");
+      } catch {
+        toast("复制失败，请手动选中复制", true);
+      }
+    };
+
+    $("#sw-metadata").onchange = async (e) => {
+      const val = e.target.checked;
+      try {
+        const r = await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ injectMetadata: val })
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        toast("metadata.user_id 自动注入已" + (val ? "开启" : "关闭"));
+        load(true);
+      } catch (err) {
+        e.target.checked = !val;
+        toast(err.message || "保存失败", true);
+      }
+    };
+
+    $("#save-routing").onclick = async () => {
+      const exSet = new Set(S.excludeProviders || []);
+      const ovMap = { ...(S.providerOverrides || {}) };
+      document.querySelectorAll(".prov-route-sel").forEach((sel) => {
+        const id = sel.dataset.id;
+        const v = sel.value;
+        if (v === "__exclude__") {
+          exSet.add(id);
+          delete ovMap[id];
+        } else if (v === "__global__") {
+          exSet.delete(id);
+          delete ovMap[id];
+        } else {
+          exSet.delete(id);
+          ovMap[id] = v;
+        }
+      });
+      try {
+        const r = await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            excludeProviders: Array.from(exSet),
+            providerOverrides: ovMap
+          })
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        toast("Provider 路由与排除策略已保存");
+        load(true);
+      } catch (e) {
+        toast(e.message || "保存失败", true);
+      }
+    };
+
+    $("#save-ver").onclick = async () => {
+      const pins = {};
+      document.querySelectorAll(".ver-pin").forEach((i) => {
+        if (i.value.trim()) pins[i.dataset.key] = i.value.trim();
+      });
+      try {
+        const r = await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ versions: pins })
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        toast("版本固定设置已保存");
+        load(true);
+      } catch (e) {
+        toast(e.message || "保存失败", true);
+      }
+    };
+
+    $("#fetch-ver").onclick = async () => {
+      try {
+        toast("正在从 npm 镜像同步最新版本...");
+        const r = await fetch("/fetch-versions", { method: "POST" });
+        const res = await r.json();
+        if (res.ok) {
+          toast("客户端版本已从 npm 同步更新");
+          load(true);
+        } else {
+          toast(res.error || res.skipped || "未获取到更新", true);
+        }
+      } catch {
+        toast("刷新请求失败", true);
+      }
+    };
+
+    $("#add-cp").onclick = () => {
+      const id = prompt("请输入新预设的 ID (仅限字母/数字/下划线/连字符，不能使用 off 等保留字):");
+      if (!id) return;
+      if (!/^[A-Za-z0-9_.-]{1,40}$/.test(id) || ["off", "__proto__", "constructor", "prototype"].includes(id)) {
+        toast("无效或受保留的预设 ID", true);
+        return;
+      }
+      S.customProfiles = S.customProfiles || {};
+      if (S.customProfiles[id]) {
+        toast("该预设 ID 已存在", true);
+        return;
+      }
+      S.customProfiles[id] = { label: id, ua: "CustomAgent/1.0", headers: {}, raw: { label: id, ua: "CustomAgent/1.0" } };
+      renderCustomProfiles();
+    };
+
+    $("#save-cp").onclick = async () => {
+      const profiles = {};
+      try {
+        document.querySelectorAll(".cp-card").forEach((c) => {
+          const id = c.dataset.id;
+          const prev = (S.customProfiles && S.customProfiles[id] && S.customProfiles[id].raw) || {};
+          const label = c.querySelector(".cp-lbl").value.trim() || id;
+          const ua = c.querySelector(".cp-ua").value.trim();
+          const headers = {};
+          c.querySelectorAll(".hdr-row").forEach((row) => {
+            const proto = row.querySelector(".hdr-proto").value;
+            const kInput = row.querySelector(".hdr-k");
+            const k = kInput.value.trim();
+            const v = row.querySelector(".hdr-v").value.trim();
+            if (!k && !v) return;
+            if (!HEADER_KEY_RE.test(k) || FORBIDDEN_HEADERS.has(k.toLowerCase())) {
+              kInput.classList.add("invalid");
+              throw new Error(`预设 ${id} 含非法或受保护的 Header 字段名: ${k}`);
+            }
+            kInput.classList.remove("invalid");
+            if (!v || v.length > 512) throw new Error(`预设 ${id} 的 Header ${k} 值不能为空且不超 512 字符`);
+            headers[proto] = headers[proto] || {};
+            headers[proto][k] = v;
+          });
+          const nextObj = { ...prev, label };
+          if (!prev.forms) nextObj.ua = ua;
+          if (Object.keys(headers).length) nextObj.headers = headers;
+          else delete nextObj.headers;
+          profiles[id] = nextObj;
+        });
+
+        const r = await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profiles })
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        toast("自定义预设已保存并热生效");
+        load(true);
+      } catch (e) {
+        toast(e.message || "保存失败", true);
+      }
+    };
+
+    // Font Size & Theme Controls
+    let fsVal = Number(localStorage.getItem("ua-switcher-font") || 13);
+    const setFs = (v) => {
+      fsVal = Math.min(18, Math.max(11, v));
+      document.documentElement.style.setProperty("--fs", fsVal + "px");
+      try { localStorage.setItem("ua-switcher-font", String(fsVal)); } catch {}
+    };
+    $("#f-dn").onclick = () => setFs(fsVal - 1);
+    $("#f-up").onclick = () => setFs(fsVal + 1);
+
+    $("#btn-theme").onclick = () => {
+      const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", cur);
+      try { localStorage.setItem("ua-switcher-theme", cur); } catch {}
+    };
+
+    // Bottom Audit Drawer Toggle & Polling
+    $("#audit-toggle").onclick = () => {
+      const dock = $("#audit-dock");
+      const open = dock.classList.toggle("open");
+      $("#dock-arrow").textContent = open ? "▼ 收起" : "▲ 展开";
+    };
+
+    $("#btn-clear-log").onclick = () => {
+      localLogs = [];
+      renderAuditLogs();
+    };
+
+    function setupPolling() {
+      clearInterval(pollTimer);
+      if ($("#sw-poll").checked) {
+        pollTimer = setInterval(() => load(true), 3000);
+      }
+    }
+    $("#sw-poll").onchange = setupPolling;
+
+    load(false);
+    setupPolling();
+  </script>
+</body>
+</html>
