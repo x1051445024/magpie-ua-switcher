@@ -13,7 +13,15 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 
 第三个字段：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）时，插件把真实 Claude Code 的 `metadata.user_id` 写进 **Messages 线路 provider 的 `extraBody`**，由 magpie 自己在请求发出前合进请求体。严格校验 Claude Code 身份的中转站要求「原始 UA + metadata.user_id 齐全」，只改头不改体会被拒或断流（上游常记为 499）；补上后即可通过。该 id 首次生成后持久化在配置同目录，跨请求稳定；请求体已带 `metadata` 时不覆盖，所以客户端自带的 `user_id` 不会被改，您手工设的 `extraBody` 也不会被插件认领。可在网页「Provider 设置」里关闭（配置项 `injectMetadata`）。
 
-1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。新路径有两个边界：magpie 的 `extraBody` 只对 API-key provider（和 ChatGPT 登录账号）生效，不对其他 agent 的登录账号生效；字段只写给会走 Messages 线路的 provider——混线 provider（Claude 模型不经转换、直接打到它的 anthropic 端点）也会写，此时该 provider 的另一条线路同样带上这个字段，而完全没有 anthropic 端点的 provider 不写。
+1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。详见 [CHANGELOG](CHANGELOG.md) 1.8.0。
+
+换到这条便宜路径有三个边界，其中第一条相对 1.7.0 是**真实损失**：
+
+- **由 auth 插件承载的 provider 不在覆盖范围内。** magpie 只在"该 provider 是从 `providers.json` 构造、且没有登录账号"（以及 ChatGPT 登录账号）时读取 `extraBody`；由 `opencode-*-auth` 之类插件承载的 provider 带着登录账号，magpie 会直接忽略这个字段——插件也写不进去，因为那条条目本身没有端点。旧钩子能覆盖它们，因为它判的是客户端协议和模型名前缀，而不是 provider 条目。所以如果您的 Claude Code 专用中转站是通过 auth 插件添加的，1.8.0 会给它换头、但不会带 `user_id`。
+- **`baseAPI` 为 Gemini 的 provider 不写**，因为 `generateContent` 会拒绝它没有对应字段的顶层名。
+- **混线 provider 会在所有线路上带上这个字段。** 它的 Claude 模型不经转换直接打到 anthropic 端点，而 magpie 的 `extraBody` 是扁平的，所以该 provider 的 Chat/Responses 请求也会带 `metadata`；插件在日志里提示一次。完全没有 Messages 通路的 provider 不会被写入。
+
+**已实测**：对一个不带该字段就回 `403 claude_code_required` 的中转站，经 magpie 走真实服务路径、档案已应用时返回 `200`；把 `injectMetadata` 关掉（请求头保持不变）后，站点重新索要 `metadata.user_id`。自查方法：`curl http://127.0.0.1:3426/state` 看 `metadata.providers`（插件到底给哪几个 provider 写了），再到 magpie 的 Routing 里确认那次请求确实由这个 provider 服务——**模型名要带 `providerID/modelID` 前缀**，裸模型名会被路由到 magpie 挑的任意一家，测不出目标站的行为。
 
 协议自适应：按 provider/模型的 SDK 包或 providers.json 的 wire 字段识别 anthropic / openai(responses) 协议，anthropic 专属头（anthropic-beta、X-Stainless-* 等）只发给 anthropic 协议请求，OpenAI-Beta 等只发给 responses 请求。
 
