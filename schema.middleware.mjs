@@ -10,6 +10,14 @@
 // Only the top level is touched: nested unions are legal and stay as they are.
 // Runs inside magpie (moejs, no Node APIs), 250ms per request; returning
 // undefined leaves the request bytes untouched.
+//
+// Since 1.8.0 this is also where the tool-schema diagnostics live (they used
+// to be in the gateway hook, hooks.mjs, which is gone): set the plugin's
+// options to {"diagnose": true} — `magpie plugin options ua-switcher
+// '{"diagnose":true}'`, or the Options button in Plugins › Installed — and
+// each tool Anthropic would reject is named in magpie's log. Read-only: the
+// request is never modified for it, and moejs has no file system, so it logs
+// instead of writing ua-switcher-tools.json as the hook did.
 
 const UNIONS = ["oneOf", "allOf", "anyOf"]
 
@@ -129,8 +137,10 @@ export function onRequest(body, ctx) {
   try {
     if (!isObject(body)) return
     if (!ctx || ctx.protocol !== "anthropic") return
+    const options = isObject(ctx.options) ? ctx.options : {}
+    if (options.diagnose === true) diagnose(body.tools)
     // escape hatch, set through `magpie plugin options`; moejs cannot read files
-    if (isObject(ctx.options) && ctx.options.disable === true) return
+    if (options.disable === true) return
     if (!Array.isArray(body.tools)) return
     let changed = false
     for (let i = 0; i < body.tools.length; i++) {
@@ -139,5 +149,45 @@ export function onRequest(body, ctx) {
     if (changed) return body
   } catch {
     return
+  }
+}
+
+// what Anthropic's validator turns away: a union at the top level of a tool's
+// input schema, or no top-level type at all. Reported before fixTool has
+// merged it away, so the log names the server the tool came from.
+function oddSchemas(tools) {
+  const out = []
+  if (!Array.isArray(tools)) return out
+  for (let i = 0; i < tools.length; i++) {
+    const t = tools[i]
+    if (!isObject(t)) continue
+    const s = isObject(t.input_schema) ? t.input_schema : isObject(t.inputSchema) ? t.inputSchema : isObject(t.parameters) ? t.parameters : null
+    if (!s) continue
+    const top = UNIONS.filter((k) => k in s)
+    if (top.length || !("type" in s)) out.push(`${t.name ?? "?"}(${top.length ? top.join("/") : "no type"};${Object.keys(s).join(",")})`)
+  }
+  return out
+}
+
+// one line per shape, not per turn: a pooled runtime sees the same tools on
+// every request of the session, and magpie caps a middleware at 60 log lines
+// a minute. The remembered line is bounded too — the runtime lives as long as
+// the gateway does, so a request with thousands of tools must not grow it.
+let lastReported = ""
+const MAX_REPORTED = 6
+
+function diagnose(tools) {
+  try {
+    const odd = oddSchemas(tools)
+    if (!odd.length) return
+    const shown = odd.slice(0, MAX_REPORTED)
+    const line = shown.join(" ") + (odd.length > shown.length ? ` +${odd.length - shown.length} more` : "")
+    if (line === lastReported) return
+    lastReported = line
+    if (typeof console !== "undefined" && console && typeof console.warn === "function") {
+      console.warn(`ua-switcher: ${odd.length} tool schema(s) Anthropic would reject: ${line}`)
+    }
+  } catch {
+    // diagnostics never break a request
   }
 }

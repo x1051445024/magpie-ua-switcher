@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.8.0 — 2026-11-04
+
+**移除 gateway 钩子：`metadata.user_id` 改走 magpie 原生 extraBody / Drop the gateway hook; the user_id rides magpie's own extraBody**
+
+- **为什么改**：`package.json` 只要声明 `magpie.hooks`，magpie 就会把**每一个** agent 请求体（完整历史、系统提示词、工具定义）通过 RPC 复制进 Bun 插件宿主（`internal/plugin/gateway.go:206`），在宿主里为每个钩子 `structuredClone` 一次（`internal/plugin/host.js:1414`），返回新体时再 `JSON.parse(JSON.stringify())` 一次（`:1419`），最后为防篡改把 `tools` 等 7 个键各序列化两遍（`:1426-1429`）——**即使钩子对这个请求什么都没改也照做**。JavaScriptCore 把 JSON 解析成对象树后再放大 5~10 倍，且不会及时把物理页交还内核。反馈的容器（magpie 官方镜像，`ghcr.io/yetone/magpie`）因此涨到 626MB 触发 OOM。
+- **怎么改**：插件在切换档案时把 `metadata.user_id` 写进 Messages 线路 provider 的 `extraBody`（providers.json），由 magpie 在 Go 侧、请求发出前的最后一步合并（`internal/provider/extrabody.go:144`）。JavaScript 不再看到这个请求体，`HasGateway()` 变 false，整条 RPC 路径消失。
+- **语义保持**：magpie 的 extraBody 不覆盖请求体里已有的字段，所以客户端自带的 `user_id` 依旧优先；用户自己写过的 `extraBody.metadata` 插件不认领、不覆盖，只在日志提示一次；`appliedMeta` 记账，切到别的档案或 `injectMetadata: false` 时精确撤回自己写过的那一份。
+- **已知边界**：extraBody 只对 API-key provider（以及 ChatGPT 登录账号）生效，不对其他 agent 的登录账号生效（`extrabody.go:77-85`）；字段只写给会走 Messages 线路的 provider（`baseAPI=anthropic`、`baseURL` 含 anthropic，或配了 `anthropic` 端点）。混线 provider 也会写，此时它另一条线路的请求同样带上 `metadata`——magpie 的 extraBody 不分线路，日志会提示一次。**登录账号这一条不构成回退**：源码复核过，Claude 订阅路径（`internal/gateway/claude_subscription.go`）把请求转成 `stream-json` 喂本机 `claude -p`，全程不读 `metadata`，旧钩子注入的值在那条路径上本来就被丢弃，且该文件内既无 `WithExtraBody` 也无 `forwardOnce` 调用。
+- **诊断随迁**：`diagnose` 从 `ua-switcher.json` 移到插件 options（`magpie plugin options ua-switcher '{"diagnose":true}'`），结果写进 magpie 日志而不是 `ua-switcher-tools.json`，同一形状只记一次，单行最多列 6 个工具名。旧键不会静默失效：配置里仍留着 `"diagnose": true` 时，插件在加载与 `/state` 时各提示一次（去重，不刷屏）指引到新开关。
+- **作用面变化（相对旧钩子，升级前请读）**：
+  - **变宽**：旧钩子看的是**客户端协议**（只有 Claude Code 这类 anthropic 客户端会补 user_id），新机制看的是**provider 能否走 Messages**。于是 Codex 等 responses 客户端经 magpie 翻译后打到 Anthropic 中转站的请求，现在也会带上 `metadata.user_id`。
+  - **变严**：路由组不再绕过排除列表。旧钩子对 `group/zcode` 这类模型名解析不出 provider，因此不受 `excludeProviders` 约束；新机制由实际落地的 provider 决定，被排除就没有。
+  - **session 语义**：旧钩子在进程内每 4 小时换一次 session 段；新机制在切档案/重载插件时定格，直到下次 apply。对做会话亲和与 prompt cache 的中转站而言这更稳，但不再自动轮换。
+- **顺带修掉一个既有缺陷**：`wireOf(p)` 原先先看「有没有 `responses` URL」，会遮蔽用户显式声明的 `baseAPI: "anthropic"`——magpie 的编辑器把 `chat`/`responses`/`anthropic`/`gemini` 与 `baseAPI` 分开保存（`internal/gui/providers.go:80`、`:91`），所以一个 Anthropic 中转站完全可能带着 responses URL。此前它会被判成 openai 线路，丢掉 `anthropic-version` / `anthropic-beta` / `X-Stainless-*` 而换上 responses 头。复审时指出更宽的重排会连带改变 `baseAPI` 缺省、`baseAPI: "chat"` 那批 provider 的头分组，因此最终版**只把显式 `baseAPI === "anthropic"` 提到最前**，其余分支与 1.7.0 逐字节等价（已加断言覆盖 `baseAPI: "chat"` + responses、缺省 + responses 两种旧行为）。「能否走 Messages」交给独立的 `messagesWire(p)` 判：比头的判据宽（有 `anthropic` 端点即算），并排除 `baseAPI: "gemini"`。
+- **extraBody 归属改为「本机 base id 认领」**：不再只信 `appliedMeta` 账本，也不只看形状。写入与撤回都以「该 `user_id` 是否带本机 `ua-switcher-userid.json` 里的 base 前缀」为准，账本仅在 base 读不到时兜底。于是：①用户在 magpie GUI 里改过的值不会被删；②从别的机器 `~/.claude.json` 抄来的真实 id 即使形状完全合法也不被认领、不被覆盖、切 `off` 也不删；③账本（`ua-switcher.json`）被重置而值仍是本机写的，切 `off` 仍能清干净，不留孤儿。`native_endpoints` 那条判据未采纳——providers.json 里没有这个字段，magpie 是按模型现算的（`internal/provider/native_endpoints.go:11`）。
+- **magpie 版本下限**：`internal/provider/extrabody.go` 在 v0.1.1190 尚不存在、v0.1.1191 首次出现（commit `863af7a`，2026-10-11，#1604）。低于 v0.1.1191 的 magpie 会忽略 `extraBody`，即**不报错也不注入**。运行期采取「只在有实证时提示」：读 magpie 桌面版写的 `last-version`（`internal/gui/whatsnew.go:127`），确认过旧才 warn 一次；无头 `magpie web` 没有这个文件，此时不猜测、不告警，仅由 README 声明下限。`/state.metadata` 新增 `minMagpieVersion` 与 `magpieVersion`（读不到为 null）。
+- **升级**：`magpie plugin update`（或重新 `magpie plugin add`）后重启 magpie，让插件宿主丢掉旧钩子。`/state` 新增 `metadata: {via, profiles, wires, providers}`，可据此确认注入已生效；`ua-switcher-userid.json` 沿用旧文件，身份不变。
+- **文件移除**：`hooks.mjs` 已从仓库删除（`package.json` 的 `magpie.hooks` 与 `files` 同步去掉）。它自 1.8.0 起不再被任何代码加载，保留只会让人误以为钩子路径还在；需要恢复可从 v1.7.0 的 tag 取回（sha256 `cd0fd493…93f41a2`，7849 字节）。selftest 增加两条守卫：`package.json` 不再声明钩子、磁盘上也不存在该文件。
+- 测试：189 项断言（原 150），新增钩子缺席守卫、extraBody 写入/撤回/不覆盖/记账、`wireOf` 与 `messagesWire` 分离后的头分组零回归（`baseAPI: "chat"`、缺省、纯 Gemini、单 anthropic 端点四种形态）、base id 认领（外来真实 id 不覆盖不删除、账本丢失仍可回收）、版本下限提示等用例。
+- **致谢**：本版的起因是 [@bearchild233](https://github.com/bearchild233) (Yu Xiaoxiang) 的 OOM 报告——内存受限的 Docker 容器里 `magpie-bun` 被内核 `CONSTRAINT_MEMCG` 连续强杀，附了内核日志与根因分析。他在 [PR #1](https://github.com/x1051445024/magpie-ua-switcher/pull/1) 里对配置目录、软链接与权限的处理本版继续沿用。
+
 ## 1.7.0 — 2026-11-02
 
 **安全加固、并发韧性、Schema 属性合并与协议拟真全面优化 / Security, Concurrency & Protocol Hardening**

@@ -1,15 +1,25 @@
 // ua-switcher — switch the User-Agent (and companion identity headers) magpie
 // sends upstream: Codex CLI / Claude Code / pi / ZCode / custom profiles.
 //
-// The rewrite rides the `chat.headers` hook, which magpie's plugin host
-// applies last, over every other header source (SDK defaults, auth loader,
-// headers passed in by the main app). Switching is done from a tiny local
-// web page (default http://127.0.0.1:3426), by curl, or by editing
-// ~/.config/magpie/ua-switcher.json — all hot, no magpie restart needed.
+// Switching is done from a tiny local web page (default
+// http://127.0.0.1:3426), by curl, or by editing ~/.config/magpie/ua-switcher.json
+// — all hot, no magpie restart needed. Each switch rewrites the native
+// providers' `headers` in magpie's own providers.json, which is what magpie
+// sends upstream; the `chat.headers` hook covers the requests magpie's plugin
+// host makes itself, and is applied last, over every other header source (SDK
+// defaults, auth loader, headers passed in by the main app).
+//
+// A Claude Code profile also fills in the metadata.user_id a real Claude Code
+// sends, since 1.8.0 as the provider's `extraBody` in providers.json: magpie
+// merges it in Go as the body goes out (internal/provider/extrabody.go), so no
+// request body has to cross into the plugin host for it any more.
 //
 // Known limits: chat.headers can add and override headers, not remove them;
 // the zcode provider's Start-Plan (-Trial) models rebuild their headers
-// entirely, so this plugin cannot (and should not) touch those.
+// entirely, so this plugin cannot (and should not) touch those. The user_id
+// field follows the provider's wire, so it is written for Messages providers
+// only, and magpie applies extraBody to API-key providers (and a ChatGPT
+// sign-in), not to another agent's signed-in account.
 
 import fs from "node:fs"
 import os from "node:os"
@@ -25,6 +35,7 @@ import {
   versionsPath,
   zcodeMidPath,
 } from "./paths.mjs"
+import { CLAUDE_CODE_PROFILES, isOurMetadata, peekBaseId, resetUserIdMemo, userId } from "./userid.mjs"
 
 let CONFIG_PATH = configPath()
 let PROVIDERS_PATH = providersPath()
@@ -50,6 +61,7 @@ function refreshPaths() {
     cache = { mtime: -1, cfg: DEFAULTS }
     versionsCache = { mtime: -1, data: null }
     zcodeMidCache = { checkedAt: 0, mid: "" }
+    resetUserIdMemo() // the identity file moved with the config folder
     lastAppliedMtime = -1
     lastProvidersMtime = -1
   }
@@ -248,6 +260,7 @@ const DEFAULTS = {
   versions: {},
   selfcheck: false,
   applied: {},
+  appliedMeta: {},
   autoVersions: true,
   updateEveryHours: 24,
   registry: null, // extra npm registry tried first, e.g. https://registry.npmmirror.com
@@ -308,6 +321,8 @@ function normalize(raw) {
   c.profile = typeof c.profile === "string" ? c.profile : "off"
   c.selfcheck = c.selfcheck === true
   c.applied = c.applied && typeof c.applied === "object" && !Array.isArray(c.applied) ? c.applied : {}
+  c.appliedMeta =
+    c.appliedMeta && typeof c.appliedMeta === "object" && !Array.isArray(c.appliedMeta) ? c.appliedMeta : {}
   c.versions =
     c.versions && typeof c.versions === "object" && !Array.isArray(c.versions)
       ? Object.fromEntries(Object.entries(c.versions).filter(([, v]) => typeof v === "string"))
@@ -316,7 +331,8 @@ function normalize(raw) {
   const hours = Number(c.updateEveryHours)
   c.updateEveryHours = Number.isFinite(hours) && hours > 0 ? hours : 24
   c.registry = typeof c.registry === "string" && /^https?:\/\//.test(c.registry) ? c.registry : null
-  // gateway hook (hooks.mjs): fill metadata.user_id for Claude Code profiles
+  // metadata.user_id for Claude Code profiles: written as the provider's
+  // extraBody by providersApply, and merged upstream by magpie itself
   c.injectMetadata = c.injectMetadata !== false
   return c
 }
@@ -585,10 +601,75 @@ function protocolOf(msg) {
 // responses API endpoints. This picks the right headers group so anthropic
 // headers never leak to OpenAI upstreams and vice versa, even when the same
 // headers the user set themselves survive an "off".
+//
+// One fix, nothing else: what the user declared as the provider's base API
+// wins over which endpoint fields happen to be filled in, because magpie's
+// editor saves `chat` / `responses` / `anthropic` / `gemini` beside `baseAPI`
+// (internal/gui/providers.go:80, :91) and a Messages relay can carry a
+// responses URL. Everything else keeps v1.7.0's order exactly: this function
+// decides header groups for every profile, so a wider reordering would be a
+// silent behavior change for people who never asked for one. `messagesWire`
+// below is where the wider Messages question lives.
 function wireOf(p) {
+  if (!p || typeof p !== "object") return "other"
+  if (p.baseAPI === "anthropic") return "anthropic"
   if (p.baseAPI === "responses" || typeof p.responses === "string") return "openai"
-  if (p.baseAPI === "anthropic" || /anthropic/i.test(String(p.baseURL ?? ""))) return "anthropic"
+  if (/anthropic/i.test(String(p.baseURL ?? ""))) return "anthropic"
   return "other"
+}
+
+// Whether the provider can be reached on the Messages wire at all, which is
+// what decides whether the user_id is written. Wider than wireOf on purpose:
+// a mixed provider's Claude models go to its anthropic endpoint untranslated
+// even while its headers follow the responses group, and those are the relays
+// that ask for the complete Claude Code identity. A provider whose base API is
+// Gemini is left alone: magpie would send a Gemini body, and generateContent's
+// Proto3 JSON parser refuses a top-level name it has no field for.
+// (There is no `native_endpoints` in providers.json to read — magpie computes
+// that per model, internal/provider/native_endpoints.go:11, and only reports
+// it in /v1/models.)
+function messagesWire(p) {
+  if (!p || typeof p !== "object") return false
+  if (p.baseAPI === "gemini") return false
+  if (wireOf(p) === "anthropic") return true
+  return typeof p.anthropic === "string" && p.anthropic.trim() !== ""
+}
+
+// The first magpie that reads a provider's extraBody is v0.1.1191
+// (internal/provider/extrabody.go, commit 863af7a, 2026-10-11, #1604). Below
+// it the field is ignored, so the user_id simply never arrives — no error, no
+// log line. magpie records the version it last ran in `last-version`, written
+// by the desktop GUI's what's-new pass (internal/gui/whatsnew.go:127); a
+// headless `magpie web` in Docker has no such file, and a plugin is never
+// handed magpie's version in its input (internal/plugin/host.js:1211). So this
+// warns only on positive evidence of an old version and says nothing when the
+// file is absent or unreadable — a guess about the version is not a warning.
+const MIN_EXTRABODY_PATCH = 1191
+
+// The 1.7.0 way to ask for tool-schema diagnostics was `"diagnose": true` in
+// ua-switcher.json, read by the gateway hook. That hook is gone and the
+// middleware that replaced it can only see the plugin's options, so the old
+// key now means nothing on its own. note() speaks once per message, so this is
+// safe to ask from the load path and from /state alike.
+function warnLegacyDiagnose(cfg) {
+  if (cfg && cfg.diagnose === true) {
+    note(
+      'diagnose is set in ua-switcher.json, which 1.8.0 no longer reads: the middleware takes it from the plugin options instead — run magpie plugin options ua-switcher {"diagnose":true}, or drop the key here to silence this.',
+      "warn",
+    )
+  }
+}
+
+function magpieVersionHint() {
+  let raw
+  try {
+    raw = fs.readFileSync(path.join(magpieDir(), "last-version"), "utf8").trim()
+  } catch {
+    return null
+  }
+  const m = /^0\.1\.(\d+)$/.exec(raw)
+  if (!m) return null
+  return { version: raw, tooOld: Number(m[1]) < MIN_EXTRABODY_PATCH }
 }
 
 function providersApply(cfg) {
@@ -611,7 +692,11 @@ function providersApply(cfg) {
   if (!json || !Array.isArray(json.providers)) return
   const profiles = effectiveProfiles(cfg)
   const applied = { ...(cfg.applied ?? {}) }
+  const appliedMeta = { ...(cfg.appliedMeta ?? {}) }
+  let idForThisPass = null // userId() reads and may write a file: once a pass
+  let baseForThisPass = null // peekBaseId() reads it the same way
   let changed = false
+  let metaChanged = false
   for (const p of json.providers) {
     if (!p || typeof p !== "object" || typeof p.id !== "string") continue
     const name =
@@ -634,6 +719,47 @@ function providersApply(cfg) {
     const keys = Object.keys(headers)
     if (keys.length) applied[p.id] = keys
     else delete applied[p.id]
+
+    // Claude Code's metadata.user_id, as the provider's extraBody: magpie
+    // merges those into the body as it goes out (internal/provider/
+    // extrabody.go), in Go, so no request body has to cross into the plugin
+    // host for it — which is what a gateway hook (magpie.hooks) made it do,
+    // for every request, until 1.8.0. Two of magpie's own rules carry the
+    // old hook's scope: a field the body already has is kept, so a client's
+    // own user_id is never overwritten, and the field is written only for a
+    // provider that answers the Messages wire — extraBody is flat, so on a
+    // mixed provider a Chat or Responses request carries it as well, which is
+    // why a provider with no anthropic endpoint at all is left alone.
+    const mine = Array.isArray(appliedMeta[p.id]) ? appliedMeta[p.id] : []
+    const wantsMeta = cfg.injectMetadata !== false && CLAUDE_CODE_PROFILES.has(name) && messagesWire(p)
+    const eb = p.extraBody && typeof p.extraBody === "object" && !Array.isArray(p.extraBody) ? { ...p.extraBody } : {}
+    const wrote = []
+    const claimed = mine.includes("metadata")
+    if (baseForThisPass === null) baseForThisPass = peekBaseId()
+    const ours = isOurMetadata(eb.metadata, { baseId: baseForThisPass, recordedInLedger: claimed })
+    if (wantsMeta) {
+      if (wireOf(p) !== "anthropic") {
+        note(`${p.id}: it answers the Messages wire beside another; magpie sends extraBody on every wire, so a Chat or Responses request to it carries metadata too`)
+      }
+      if (!("metadata" in eb) || ours) {
+        if (idForThisPass === null) idForThisPass = userId()
+        eb.metadata = { user_id: idForThisPass }
+        wrote.push("metadata")
+      } else {
+        note(`${p.id}: its extraBody metadata is not what this plugin writes; left as set`, "warn")
+      }
+    } else if ("metadata" in eb && ours) {
+      delete eb.metadata
+    }
+    const beforeMeta = JSON.stringify(p.extraBody ?? {})
+    if (Object.keys(eb).length) p.extraBody = eb
+    else delete p.extraBody
+    if (JSON.stringify(p.extraBody ?? {}) !== beforeMeta) {
+      changed = true
+      metaChanged = true
+    }
+    if (wrote.length) appliedMeta[p.id] = wrote
+    else delete appliedMeta[p.id]
   }
   if (changed) {
     try {
@@ -642,12 +768,25 @@ function providersApply(cfg) {
         lastProvidersMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
       } catch {}
       note(`rewrote headers of native providers per profile "${cfg.profile}"`)
+      if (metaChanged) {
+        note("wrote Claude Code's metadata.user_id as extraBody for the Messages providers")
+        const hint = magpieVersionHint()
+        if (hint?.tooOld) {
+          note(
+            `magpie ${hint.version} is older than v0.1.${MIN_EXTRABODY_PATCH}, which is the first that reads a provider's extraBody: the user_id is written but magpie will ignore it. Update magpie.`,
+            "warn",
+          )
+        }
+      }
     } catch (e) {
       note(`cannot write providers.json: ${e?.message ?? e}`, "error")
       return
     }
   }
-  if (JSON.stringify(applied) !== JSON.stringify(cfg.applied ?? {})) saveCfg({ applied })
+  const ledgersChanged =
+    JSON.stringify(applied) !== JSON.stringify(cfg.applied ?? {}) ||
+    JSON.stringify(appliedMeta) !== JSON.stringify(cfg.appliedMeta ?? {})
+  if (ledgersChanged) saveCfg({ applied, appliedMeta })
   try {
     lastAppliedMtime = cache.mtime
     lastProvidersMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
@@ -889,13 +1028,29 @@ function state() {
     }
   }
   const prov = providersForUi()
+  warnLegacyDiagnose(cfg)
+  // what the user_id now rides: magpie's extraBody on these providers, per
+  // the last apply. The id itself is a device fingerprint and stays out of
+  // /state — the file beside the config holds it.
+  const metaProviders = Object.entries(cfg.appliedMeta ?? {})
+    .filter(([, keys]) => Array.isArray(keys) && keys.includes("metadata"))
+    .map(([id]) => id)
+    .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.7.0",
+    version: "1.8.0",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
     injectMetadata: cfg.injectMetadata !== false,
+    metadata: {
+      via: "extraBody",
+      profiles: [...CLAUDE_CODE_PROFILES],
+      wires: ["anthropic"],
+      providers: metaProviders,
+      minMagpieVersion: `0.1.${MIN_EXTRABODY_PATCH}`,
+      magpieVersion: magpieVersionHint()?.version ?? null,
+    },
     autoVersions: cfg.autoVersions !== false,
     port: server && typeof server === "object" ? server.port : cfg.port,
     configPath: CONFIG_PATH,
@@ -1131,6 +1286,10 @@ export async function UASwitcherPlugin(input) {
     lastAppliedMtime = cache.mtime
     providersApply(loadCfg())
   } catch {}
+  // 1.7.0 read `diagnose` from this file, through the gateway hook. The hook is
+  // gone and the middleware cannot read files, so the switch now lives in the
+  // plugin's options; say so once instead of letting the old setting go quiet.
+  warnLegacyDiagnose(loadCfg())
   startServer()
   fetchLatestVersions().catch(() => {}) // stale-cache check; rewrites on change
   const hooks = { "chat.headers": chatHeaders }

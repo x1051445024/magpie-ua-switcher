@@ -11,7 +11,9 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 1. **原生 provider**（providers.json 里的 API-key 条目，如中转站，由 magpie 的 Go 侧直接发请求）：切换档案时，插件把解析出的头写进 providers.json 对应条目的 `headers` 字段——该字段在 magpie 里**永远优先**于默认 UA，且 providers.json 热加载。只动插件自己写入的键（记录在配置文件 `applied` 字段），你手工设置的其他 headers 不受影响；切回 `off` 时恰好移除这些键。
 2. **插件宿主路径的 provider**（如 zcode-auth 声明的 zcode）：通过 `chat.headers` 钩子注入，优先级最高，逐请求生效。
 
-此外还有一条 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 让 magpie 自动加载）：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）、且请求走 anthropic 协议时，往请求体补 `metadata.user_id`（真实 Claude Code 的格式）。严格校验 Claude Code 身份的中转站要求「原始 UA + metadata.user_id 齐全」，只改头不改体会被拒或断流（上游常记为 499）；补上后即可通过。该 id 首次生成后持久化，跨请求稳定；客户端自带时不覆盖。可在网页「Provider 设置」里关闭（配置项 `injectMetadata`）。
+第三个字段：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）时，插件把真实 Claude Code 的 `metadata.user_id` 写进 **Messages 线路 provider 的 `extraBody`**，由 magpie 自己在请求发出前合进请求体。严格校验 Claude Code 身份的中转站要求「原始 UA + metadata.user_id 齐全」，只改头不改体会被拒或断流（上游常记为 499）；补上后即可通过。该 id 首次生成后持久化在配置同目录，跨请求稳定；请求体已带 `metadata` 时不覆盖，所以客户端自带的 `user_id` 不会被改，您手工设的 `extraBody` 也不会被插件认领。可在网页「Provider 设置」里关闭（配置项 `injectMetadata`）。
+
+1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。新路径有两个边界：magpie 的 `extraBody` 只对 API-key provider（和 ChatGPT 登录账号）生效，不对其他 agent 的登录账号生效；字段只写给会走 Messages 线路的 provider——混线 provider（Claude 模型不经转换、直接打到它的 anthropic 端点）也会写，此时该 provider 的另一条线路同样带上这个字段，而完全没有 anthropic 端点的 provider 不写。
 
 协议自适应：按 provider/模型的 SDK 包或 providers.json 的 wire 字段识别 anthropic / openai(responses) 协议，anthropic 专属头（anthropic-beta、X-Stainless-* 等）只发给 anthropic 协议请求，OpenAI-Beta 等只发给 responses 请求。
 
@@ -97,9 +99,9 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `selfcheck`：自检模式，见下。
 - `autoVersions` / `updateEveryHours` / `registry`：npm 版本自动更新的开关、查询间隔（小时）、额外的首选 registry。
 - `versions`：手动钉版本，如 `{"codex": "0.170.0"}`，优先级最高。
-- `injectMetadata`：默认 true。为 Claude Code 身份档案的 anthropic 请求补 `metadata.user_id`（网关钩子）；关掉即完全不碰请求体。
+- `injectMetadata`：默认 true。为 Claude Code 身份档案的 Messages provider 写 `metadata.user_id`（providers.json 的 `extraBody`）；关掉即把插件写过的那份撤掉，不碰其它。
 - `profiles`：自定义档案，合并覆盖同名内置。单形态 `{ "label", "ua", "headers": {"any","anthropic","openai"} }`；双形态 `forms: { anthropic, openai, default }`。
-- `applied`：插件内部记账，勿手工编辑。
+- `applied` / `appliedMeta`：插件内部记账（分别在 providers.json 里写过的 header 键与 extraBody 字段），勿手工编辑。
 
 ### 文件位置
 
@@ -126,7 +128,7 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 # 5. 验证完把 "selfcheck" 改回 false 并重载
 ```
 
-单元测试：`magpie-bun.exe selftest.mjs`（81 项断言）。
+单元测试：`magpie-bun.exe selftest.mjs`（189 项断言：各档案 × 各协议、排除列表、按 provider 覆盖、版本钉、asar 版本读取、`/config` 校验、providers.json 写入与回滚、user_id 所寄的 extraBody 写入与撤回，以及「不得声明任何 gateway 钩子」的守卫）。
 
 ## 已知局限
 
@@ -137,6 +139,9 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 - 只影响 magpie → 上游的请求头；不改变下游 agent → magpie 的请求。
 - 网页开关只绑 `127.0.0.1`。
 - 在 magpie 界面里编辑 provider 后，以界面保存的内容为准（插件下次切换时重写自己的键）。
+- 1.8.0 起，显式声明 `baseAPI: "anthropic"` 的 provider 即使同时存了 `responses` URL，也仍按 anthropic 头组发送——**只改了这一种情形**，其余 provider 的头分组与之前完全一致。`metadata.user_id` 的判据比头的判据宽：有 anthropic 端点的 provider 会写，即使它的头仍走另一组。
+- 您自己写的、或改过的 `extraBody.metadata` 不会被覆盖也不会被删除：插件只认领仍带本机 base id（`ua-switcher-userid.json` 里那个）的字段，从别的机器抄来的真实 `user_id` 即使账本里记着这个 provider 也不会被动。
+- `metadata.user_id` 需要 **magpie v0.1.1191 及以上**：那是第一个读取 provider `extraBody` 的版本（commit `863af7a`，#1604）。低于它，字段写得进去但被静默忽略。magpie 桌面版会在配置目录留一个 `last-version`，插件读到且确认过旧时会在日志里警告；无头的 `magpie web` 没有这个文件，此时插件不作任何猜测，本行文档就是唯一提示。
 
 ## License
 
@@ -144,7 +149,13 @@ MIT — 见 [LICENSE](LICENSE)。
 
 ## 工具 schema 诊断（可选）
 
-配置里设 `"diagnose": true` 并重载插件后，每个带工具的请求都会检查一次工具定义，把 Anthropic 会拒绝的项写进 `~/.config/magpie/ua-switcher-tools.json`（顶层 `oneOf`/`allOf`/`anyOf`，或缺少顶层 `type`）。只读，不改请求。
+1.8.0 起诊断挪进了中间件——原先是网关钩子把这些项写进 `ua-switcher-tools.json`，而那个钩子本身就是内存放大的来源，已删除。开启方式是设置插件 options（不是 `ua-switcher.json`，因为 moejs 沙箱读不了文件）：
+
+```bash
+magpie plugin options ua-switcher '{"diagnose":true}'
+```
+
+或在 magpie 的 Plugins › Installed 里点这个插件的 Options 按钮。开启后，带工具的请求会检查一次工具定义，把 Anthropic 会拒绝的项（顶层 `oneOf`/`allOf`/`anyOf`，或缺少顶层 `type`）按工具名与形状写进 magpie 的日志，同一形状只记一次。只读，不改请求。关掉：`magpie plugin options ua-switcher off`。
 
 Anthropic 的 Messages API 不接受工具 `input_schema` 顶层的 `oneOf`/`allOf`/`anyOf`；有些 MCP 工具用 zod 的 `.refine()` 表达互斥参数，转成 JSON Schema 后正好落在顶层，于是只有真 Anthropic 端会报 `input_schema does not support oneOf, allOf, or anyOf at the top level`，而 GLM 等兼容层不校验。用这个诊断能直接定位是哪个工具。
 
@@ -170,4 +181,5 @@ magpie plugin options github:x1051445024/magpie-ua-switcher '{"disable":true}'
 
 感谢以下社区贡献者的杰出工作与代码贡献：
 - [@bearchild233](https://github.com/bearchild233) (Yu Xiaoxiang)：提交 [PR #1](https://github.com/x1051445024/magpie-ua-switcher/pull/1)，系统定位并修复了 Docker、XDG 与便携版环境下的配置路径决议机制、文件权限与软链接保持，以及端口看门狗自愈支持。
+- 再次感谢 [@bearchild233](https://github.com/bearchild233)：报告了 `magpie-bun` 在内存受限的 Docker 容器里被 OOM 强杀，并附上了内核日志与根因分析。1.8.0 移除网关钩子、把 `metadata.user_id` 改寄 magpie 原生 `extraBody`，正是基于这份报告。
 

@@ -287,53 +287,232 @@ const vsA = (await (await fetch(base + "/versions")).json()).values.antigravity
 // shape and provenance are asserted, not a number this machine may update
 eq("versions lists antigravity", /^\d+\.\d+\.\d+$/.test(vsA.inUse) && ["detected", "builtin", "fetched", "pinned"].includes(vsA.source), true)
 
-// --- gateway hook (hooks.mjs): metadata.user_id injection ---
-const { onRequest } = await import("./hooks.mjs")
-const uidPath = cfgPath.replace(/\.json$/, "") + "-userid.json"
-const gctx = (protocol, model) => ({ protocol, model })
-let mtimeBump = 0
-const setCfg = (patch) => {
-  const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
-  Object.assign(c, patch)
-  fs.writeFileSync(cfgPath, JSON.stringify(c))
-  // bump mtime past the millisecond the previous write landed in, so the
-  // module-level mtime cache in hooks.mjs re-reads instead of replaying
-  mtimeBump++
-  const t = 1700000000 + mtimeBump
-  fs.utimesSync(cfgPath, t, t)
-}
-const callHook = async (b, protocol, model) => (await onRequest(b, gctx(protocol, model))) ?? null
+// --- metadata.user_id (1.8.0): magpie's provider extraBody, no gateway hook ---
+// The gateway hook (magpie.hooks) is gone on purpose: declaring one makes
+// magpie copy every agent request body into the Bun host and deep-clone it
+// there, even on requests the hook leaves alone. These tests guard both halves
+// — that no hook is declared, and that the user_id still reaches upstream.
+const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+eq("no gateway hook is declared", pkg.magpie?.hooks ?? null, null)
+eq("hooks.mjs is not shipped", (pkg.files ?? []).includes("hooks.mjs"), false)
+eq("hooks.mjs is gone from disk", fs.existsSync(new URL("./hooks.mjs", import.meta.url)), false)
+eq("middleware is still declared", pkg.magpie?.middleware, "./schema.middleware.mjs")
 
-setCfg({ profile: "claude-code", excludeProviders: ["zcode"], providerOverrides: {}, injectMetadata: true })
-const gbody = { model: "m", max_tokens: 8, stream: true, tools: [{ name: "t" }], messages: [{ role: "user", content: "hi" }] }
-const got = await callHook(structuredClone(gbody), "anthropic", "draw-shuaizhan/claude-opus-5-5")
-eq("gateway injects user_id", /^user_[0-9a-f]{64}_account_.+_session_.+$/.test(got?.metadata?.user_id ?? ""), true)
-eq("gateway keeps tools", JSON.stringify(got?.tools), JSON.stringify(gbody.tools))
-eq("gateway keeps model and stream", [got?.model, got?.stream], [gbody.model, gbody.stream])
-eq("gateway keeps messages", JSON.stringify(got?.messages), JSON.stringify(gbody.messages))
-const got2 = await callHook({ model: "m", messages: [] }, "anthropic", "p-anthropic/claude")
-eq("gateway reuses one user id", got2?.metadata?.user_id, got?.metadata?.user_id)
+const uidPath = cfgPath.replace(/\.json$/, "") + "-userid.json"
+const provDoc = () => JSON.parse(fs.readFileSync(provPath, "utf8")).providers
+const providerOf = (id) => provDoc().find((p) => p.id === id) ?? null
+const metaOf = (id) => providerOf(id)?.extraBody?.metadata ?? null
+const uidOf = (id) => metaOf(id)?.user_id ?? ""
+const setProfile = async (name) => (await fetch(`${base}/set/${name}`, { method: "POST" })).json()
+const cfgDoc = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+const writeProviders = (mutate) => {
+  const doc = JSON.parse(fs.readFileSync(provPath, "utf8"))
+  mutate(doc.providers)
+  fs.writeFileSync(provPath, JSON.stringify(doc))
+}
+
+await postCfg({ excludeProviders: ["zcode"], providerOverrides: {}, injectMetadata: true })
+await setProfile("claude-code")
+const USER_ID = /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/
+eq("extraBody carries a Claude Code user_id", USER_ID.test(uidOf("p-anthropic")), true)
+eq("the responses wire gets no metadata", metaOf("p-responses"), null)
+eq("an excluded provider gets no metadata", metaOf("zcode"), null)
+eq("the claude-code UA still goes with it", String(providerOf("p-anthropic")?.headers?.["User-Agent"]).startsWith("claude-cli/"), true)
+eq("state names the provider it wrote", (await (await fetch(`${base}/state`)).json()).metadata.providers, ["p-anthropic"])
+eq("state hides the id itself", JSON.stringify((await (await fetch(`${base}/state`)).json()).metadata).includes(uidOf("p-anthropic")), false)
+
+await setProfile("pi") // pi's anthropic form is the same identity
+const uidPi = uidOf("p-anthropic")
+eq("one user id across Claude Code profiles", uidPi, uidOf("p-anthropic"))
+await setProfile("claude-code")
+eq("and across a re-apply", uidOf("p-anthropic"), uidPi)
 eq("user id persisted", fs.existsSync(uidPath), true)
 const uidRaw = JSON.parse(fs.readFileSync(uidPath, "utf8"))
 eq("persisted user_id has base_id", typeof uidRaw.base_id, "string")
 eq("base_id matches expected format", /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}$/i.test(uidRaw.base_id), true)
-eq("user_id format has session", /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/i.test(uidRaw.user_id), true)
+eq("user_id format has session", USER_ID.test(uidRaw.user_id), true)
 
-eq("gateway leaves client user_id", await callHook({ model: "m", metadata: { user_id: "user_own", x: 1 } }, "anthropic", "x/y"), null)
-eq("gateway skips responses wire", await callHook({ model: "m" }, "responses", "x/y"), null)
-eq("gateway skips chat wire", await callHook({ model: "m" }, "chat", "x/y"), null)
-eq("gateway skips excluded provider", await callHook({ model: "m" }, "anthropic", "zcode/GLM-5.3"), null)
-eq("gateway applies to routing groups", (await callHook({ model: "m" }, "anthropic", "group/zcode"))?.metadata?.user_id ? true : false, true)
-setCfg({ profile: "codex" })
-eq("gateway skips codex profile", await callHook({ model: "m" }, "anthropic", "x/y"), null)
-setCfg({ profile: "off" })
-eq("gateway skips off profile", await callHook({ model: "m" }, "anthropic", "x/y"), null)
-setCfg({ profile: "claude-code", providerOverrides: { "p-anthropic": "codex" } })
-eq("gateway respects provider override", await callHook({ model: "m" }, "anthropic", "p-anthropic/claude"), null)
-eq("gateway other provider keeps global", (await callHook({ model: "m" }, "anthropic", "p-responses/x"))?.metadata?.user_id ? true : false, true)
-setCfg({ providerOverrides: {}, injectMetadata: false })
-eq("gateway honors injectMetadata=false", await callHook({ model: "m" }, "anthropic", "x/y"), null)
-setCfg({ injectMetadata: true })
+// a provider that answers the Messages wire beside a responses one needs the
+// id too: its Claude models go to the anthropic endpoint untranslated
+writeProviders((ps) => {
+  ps.find((p) => p.id === "p-responses").anthropic = "https://relay.example"
+})
+await setProfile("claude-code")
+eq("a mixed provider gets the id too", USER_ID.test(uidOf("p-responses")), true)
+await setProfile("off")
+eq("off takes the mixed provider's back as well", providerOf("p-responses")?.extraBody ?? null, null)
+writeProviders((ps) => {
+  delete ps.find((p) => p.id === "p-responses").anthropic
+})
+await setProfile("claude-code")
+eq("no metadata without a Messages endpoint", metaOf("p-responses"), null)
+
+// 显式 baseAPI 优先于探测/手填的 responses URL：否则一个声明自己是
+// anthropic 的中转站会被判成 openai，丢掉 anthropic 专属头
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-anthropic")
+  p.baseAPI = "anthropic"
+  p.responses = "https://relay.example/v1"
+})
+await setProfile("claude-code")
+eq("an anthropic base wins over a responses URL", providerOf("p-anthropic")?.headers?.["anthropic-version"], "2023-06-01")
+eq("and it still counts as a Messages provider", USER_ID.test(uidOf("p-anthropic")), true)
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-anthropic")
+  delete p.baseAPI
+  delete p.responses
+})
+await setProfile("claude-code")
+
+// 值签名认领：账本说是插件写的，但用户已在 GUI 里改成别的形状 → 不删
+writeProviders((ps) => {
+  ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: { user_id: "custom_corp", team: "sec" } }
+})
+const cfgWithClaim = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+cfgWithClaim.appliedMeta = { "p-anthropic": ["metadata"] }
+fs.writeFileSync(cfgPath, JSON.stringify(cfgWithClaim))
+await setProfile("off")
+eq("hand-edited metadata survives a switch to off", providerOf("p-anthropic")?.extraBody?.metadata, { user_id: "custom_corp", team: "sec" })
+eq("and the plugin drops the claim", cfgDoc().appliedMeta?.["p-anthropic"] ?? null, null)
+
+// 反过来：账本丢了、值仍是插件的形状 → 不留孤儿字段
+writeProviders((ps) => {
+  ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: { user_id: uidPi } }
+})
+const cfgNoLedger = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+delete cfgNoLedger.appliedMeta
+fs.writeFileSync(cfgPath, JSON.stringify(cfgNoLedger))
+await setProfile("off")
+eq("an id the ledger lost is still cleaned up", providerOf("p-anthropic")?.extraBody ?? null, null)
+
+// 纯 Gemini 的 provider 不写：generateContent 的解析器拒绝不认识的顶层字段
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  p.baseAPI = "gemini"
+  p.gemini = "https://generativelanguage.googleapis.com/v1beta"
+})
+await setProfile("claude-code")
+eq("a gemini base gets no metadata", metaOf("p-responses"), null)
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  delete p.baseAPI
+  delete p.gemini
+})
+await setProfile("claude-code")
+
+// wireOf 只修「显式 baseAPI 被 responses URL 抢先」这一处，
+// 其余分支必须与 v1.7.0 逐字节等价——它决定的是所有档案的 headers 分组。
+await setProfile("codex")
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  p.baseAPI = "chat"
+  p.responses = "https://x/v1"
+})
+await setProfile("codex")
+eq("baseAPI chat with a responses URL still gets the openai group", String(providerOf("p-responses")?.headers?.["OpenAI-Beta"]).includes("responses"), true)
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  delete p.baseAPI
+})
+await setProfile("codex")
+eq("an omitted baseAPI with a responses URL is unchanged too", String(providerOf("p-responses")?.headers?.["OpenAI-Beta"]).includes("responses"), true)
+
+// 只有 anthropic 端点、baseAPI 缺省：headers 仍按 v1.7.0 走 other 组，
+// 但 metadata 该写还是写——两个判据故意不同宽
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  delete p.responses
+  p.anthropic = "https://x/anthropic"
+})
+await setProfile("claude-code")
+eq("a lone anthropic endpoint does not move the headers", providerOf("p-responses")?.headers?.["anthropic-version"] ?? null, null)
+eq("but it is a Messages provider for the user_id", USER_ID.test(uidOf("p-responses")), true)
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  p.responses = "http://x/v1"
+  p.baseAPI = "responses"
+  delete p.anthropic
+})
+await setProfile("off")
+
+// 值签名认领：形状对但 base 不是本机的那个 user_id，不是插件写的
+const foreignId = `user_${"0".repeat(64)}_account_00000000-0000-4000-8000-000000000000_session_00000000-0000-4000-8000-000000000000`
+writeProviders((ps) => {
+  ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: { user_id: foreignId } }
+})
+const cfgForeign = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+cfgForeign.appliedMeta = { "p-anthropic": ["metadata"] }
+fs.writeFileSync(cfgPath, JSON.stringify(cfgForeign))
+await setProfile("claude-code")
+eq("a real id the user copied in is not overwritten", uidOf("p-anthropic"), foreignId)
+await setProfile("off")
+eq("and not deleted either", uidOf("p-anthropic"), foreignId)
+eq("the ledger claim alone is not enough", cfgDoc().appliedMeta?.["p-anthropic"] ?? null, null)
+
+// 本机 base 认得出来，账本丢了也照样回收（上面那条已覆盖，这里补正面一例）
+writeProviders((ps) => {
+  ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: { user_id: uidPi } }
+})
+const cfgNoLedger2 = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+delete cfgNoLedger2.appliedMeta
+fs.writeFileSync(cfgPath, JSON.stringify(cfgNoLedger2))
+await setProfile("off")
+eq("our own base id is recognized without the ledger", providerOf("p-anthropic")?.extraBody ?? null, null)
+
+// 版本下限提示：读不到 last-version 时保持沉默，绝不瞎猜
+const stMeta = (await (await fetch(`${base}/state`)).json()).metadata
+eq("state names the extraBody floor", stMeta.minMagpieVersion, "0.1.1191")
+eq("and reports the detected version only when it read one", stMeta.magpieVersion === null || /^0\.1\.\d+$/.test(stMeta.magpieVersion), true)
+
+// switching to another profile takes the field back
+await setProfile("off")
+eq("off removes the extraBody we wrote", providerOf("p-anthropic")?.extraBody ?? null, null)
+eq("and the ledger with it", cfgDoc().appliedMeta?.["p-anthropic"] ?? null, null)
+await setProfile("codex")
+eq("a codex profile writes no metadata", metaOf("p-anthropic"), null)
+await setProfile("claude-code")
+eq("and switching back rewrites it", USER_ID.test(uidOf("p-anthropic")), true)
+
+// a field the user set themselves is never touched, and never claimed
+await setProfile("off")
+writeProviders((ps) => {
+  ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: { user_id: "user_own" }, prompt_cache_key: "mine" }
+})
+await setProfile("claude-code")
+eq("the user's own metadata survives", metaOf("p-anthropic"), { user_id: "user_own" })
+eq("and is not claimed by the ledger", cfgDoc().appliedMeta?.["p-anthropic"] ?? null, null)
+eq("the page says so", (await (await fetch(`${base}/state`)).json()).events.some((e) => String(e.text).includes("is not what this plugin writes")), true)
+writeProviders((ps) => {
+  const eb = ps.find((p) => p.id === "p-anthropic").extraBody
+  delete eb.metadata
+})
+await setProfile("claude-code")
+eq("with the user's field free, ours is written", USER_ID.test(uidOf("p-anthropic")), true)
+eq("and the user's other field stays", providerOf("p-anthropic")?.extraBody?.prompt_cache_key, "mine")
+await setProfile("off")
+eq("off leaves the user's field alone", providerOf("p-anthropic")?.extraBody, { prompt_cache_key: "mine" })
+writeProviders((ps) => {
+  delete ps.find((p) => p.id === "p-anthropic").extraBody
+})
+
+// per-provider overrides and the injectMetadata switch
+await postCfg({ providerOverrides: { "p-anthropic": "codex" } })
+await setProfile("claude-code")
+eq("an override away from Claude Code drops the id", metaOf("p-anthropic"), null)
+await postCfg({ providerOverrides: {} })
+await setProfile("claude-code")
+eq("clearing the override brings it back", USER_ID.test(uidOf("p-anthropic")), true)
+await postCfg({ injectMetadata: false })
+eq("injectMetadata=false takes it back off", providerOf("p-anthropic")?.extraBody ?? null, null)
+await postCfg({ injectMetadata: true })
+eq("and turns it on again", USER_ID.test(uidOf("p-anthropic")), true)
+await setProfile("off")
+
+// userid.mjs: the same id from a second reader of the file
+const ids = await import("./userid.mjs")
+eq("userid.mjs exports the identity", USER_ID.test(ids.userId()), true)
+eq("userid.mjs reuses the persisted base", ids.userId().replace(/_session_[0-9a-f-]{36}$/i, ""), uidPi.replace(/_session_[0-9a-f-]{36}$/i, ""))
+eq("Claude Code profiles", [...ids.CLAUDE_CODE_PROFILES].sort(), ["claude-code", "pi"])
 
 // --- gateway middleware (schema.middleware.mjs): top-level union cleanup ---
 const { onRequest: schemaHook } = await import("./schema.middleware.mjs")
@@ -374,6 +553,41 @@ eq("mw skips responses wire", mw({ model: "m", tools: [suianTool] }, "responses"
 eq("mw skips chat wire", mw({ model: "m", tools: [suianTool] }, "chat"), null)
 eq("mw skips requests without tools", mw({ model: "m" }), null)
 eq("mw honors disable option", mw({ model: "m", tools: [suianTool] }, "anthropic", { disable: true }), null)
+
+// diagnose (1.8.0): the shapes Anthropic rejects are logged, not written to a
+// file — moejs has no file system, and the gateway hook that had one is gone.
+// A fresh tool each time: fixTool below edits the schema it is handed.
+const oddTool = () => ({ name: "probe_a", input_schema: { type: "object", anyOf: [{ required: ["a"] }, { required: ["b"] }] } })
+const warns = []
+const realWarn = console.warn
+console.warn = (...a) => warns.push(a.join(" "))
+try {
+  mw({ model: "m", tools: [oddTool()] }, "anthropic", { diagnose: true })
+  mw({ model: "m", tools: [oddTool()] }, "anthropic", { diagnose: true })
+  mw({ model: "m", tools: [{ name: "clean", input_schema: { type: "object" } }] }, "anthropic", { diagnose: true })
+  mw({ model: "m", tools: [{ name: "probe_b", input_schema: { properties: {} } }] }, "anthropic")
+} finally {
+  console.warn = realWarn
+}
+eq("diagnose names the odd tool", warns.length === 1 && warns[0].includes("probe_a(anyOf"), true)
+eq("the same shape is not logged twice", warns.length, 1)
+eq("diagnose needs the option", warns.length, 1)
+
+// 1.7.0 的 diagnose 写法不再被静默吞掉：配置文件里留着这个键时，页面日志给一次指引
+{
+  const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+  c.diagnose = true
+  fs.writeFileSync(cfgPath, JSON.stringify(c))
+  const ev = (await (await fetch(`${base}/state`)).json()).events
+  eq("the old diagnose key gets a pointer, not silence", ev.some((e) => String(e.text).includes("magpie plugin options ua-switcher")), true)
+  const countPointer = async () =>
+    (await (await fetch(`${base}/state`)).json()).events.filter((e) => String(e.text).includes("no longer reads")).length
+  eq("and it speaks once, not on every poll", await countPointer(), 1)
+  delete c.diagnose
+  fs.writeFileSync(cfgPath, JSON.stringify(c))
+  await fetch(`${base}/state`)
+  eq("and never repeats after the key is gone", await countPointer(), 1)
+}
 
 // nested unions are legal for Anthropic and must survive
 const nested = { name: "n", input_schema: { type: "object", properties: { p: { oneOf: [{ type: "string" }, { type: "number" }] } } } }

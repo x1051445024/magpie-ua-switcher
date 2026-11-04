@@ -11,7 +11,9 @@ magpie has two upstream paths, and this plugin covers both:
 1. **Native providers** (API-key entries in `providers.json`, e.g. relay stations — fetched by magpie's Go side): on every switch the plugin writes the resolved headers into each provider's `headers` field, which magpie always honors and hot-reloads. Only keys the plugin itself wrote are ever touched (tracked in the config's `applied` field), so headers you set by hand survive; switching to `off` removes exactly those keys.
 2. **Plugin-host providers** (declared by plugins such as `opencode-zcode-auth`): rewritten per request through the `chat.headers` hook, which wins over every other header source.
 
-A third mechanism completes the picture: a **gateway hook** (`hooks.mjs`, discovered by magpie through `package.json`'s `magpie.hooks`). While the effective profile is `claude-code` (or pi's anthropic form) and the wire is anthropic, it fills the request body's `metadata.user_id` in the real Claude Code shape. Relays that demand the complete Claude Code identity (original UA plus `metadata.user_id`) otherwise refuse or cut the stream — the upstream often logs that as 499. The id is generated once, persisted, and stable across requests; a client-sent `user_id` is never overwritten. Turn it off in the web UI's Provider settings (`injectMetadata`).
+A third field completes the picture: while the effective profile is `claude-code` (or pi's anthropic form), the plugin writes Claude Code's `metadata.user_id` into each **Messages-wire provider's `extraBody`** in `providers.json`, and magpie merges it into the body itself as the request goes out. Relays that demand the complete Claude Code identity (original UA plus `metadata.user_id`) otherwise refuse or cut the stream — the upstream often logs that as 499. The id is generated once, persisted beside the config, and stable across requests; a body that already carries `metadata` keeps it, so a client-sent `user_id` is never overwritten, and an `extraBody` you set by hand is never claimed. Turn it off in the web UI's Provider settings (`injectMetadata`).
+
+Until 1.8.0 this same field came from a **gateway hook** (`hooks.mjs`, declared through `package.json`'s `magpie.hooks`). That hook is gone, and installing an older version on a small box is what fills memory: declaring one makes magpie copy *every* agent request body — the whole history, the system prompt, the tool schemas — across an RPC into its Bun plugin host, deep-clone it there, and re-serialize it for the tamper checks, on every request, including the ones the hook then left alone. See [CHANGELOG](CHANGELOG.md) 1.8.0. Two limits come with the cheaper path: magpie applies `extraBody` to API-key providers and a ChatGPT sign-in, not to another agent's signed-in account, and the field is written only for a provider that answers the Messages wire — on a mixed provider, whose Claude models go to its anthropic endpoint untranslated, magpie sends the field on that provider's other wire as well, and a provider with no anthropic endpoint at all is left alone.
 
 Protocol-aware: the plugin detects the wire protocol (anthropic / openai-responses) per request and only attaches protocol-appropriate companion headers (`anthropic-beta`, `X-Stainless-*` for anthropic; `OpenAI-Beta: responses=experimental`, `originator` for responses).
 
@@ -100,9 +102,9 @@ The OS segment of codex/pi/antigravity UAs is generated from the machine the plu
 - `selfcheck` — self-test mode, see below.
 - `autoVersions` / `updateEveryHours` / `registry` — the npm auto-update: on/off, fetch interval in hours, an extra registry tried first.
 - `versions` — hand pins, e.g. `{"codex": "0.170.0"}`; always beats a fetched value.
-- `injectMetadata` — default true. Fill `metadata.user_id` on anthropic requests for the Claude Code profiles (the gateway hook); off means the body is never touched.
+- `injectMetadata` — default true. Write Claude Code's `metadata.user_id` as `extraBody` on the Messages providers of a Claude Code profile; off removes what the plugin wrote and touches nothing else.
 - `profiles` — custom profiles, merged over the built-ins. Single form: `{ "label", "ua", "headers": { "any": {}, "anthropic": {}, "openai": {} } }`; per-protocol forms: `forms: { anthropic, openai, default }`.
-- `applied` — internal bookkeeping of keys the plugin wrote into `providers.json`; don't edit by hand.
+- `applied` / `appliedMeta` — internal bookkeeping of the header keys and the `extraBody` fields the plugin wrote into `providers.json`; don't edit by hand.
 
 ### Where the files are
 
@@ -134,7 +136,7 @@ cat /path/to/magpie-ua-switcher/ua-echo-last.json
 # 5. set "selfcheck" back to false and reload
 ```
 
-Unit tests: `magpie-bun.exe selftest.mjs` (81 assertions: every profile × protocol, exclusions, overrides, version pins, the asar version reader, the /config endpoint's validation, providers.json write and rollback).
+Unit tests: `magpie-bun.exe selftest.mjs` (189 assertions: every profile × protocol, exclusions, overrides, version pins, the asar version reader, the /config endpoint's validation, providers.json write and rollback, the extraBody the user_id rides, and the guard that no gateway hook is declared at all).
 
 ## Known limits
 
@@ -145,10 +147,25 @@ Unit tests: `magpie-bun.exe selftest.mjs` (81 assertions: every profile × proto
 - Only magpie → upstream headers change; what your agent sends to magpie is untouched.
 - The web page binds `127.0.0.1` only.
 - If you edit a provider in magpie's UI, what the UI saves wins until the plugin's next switch rewrites its keys.
+- Since 1.8.0 a provider that declares `baseAPI: "anthropic"` keeps the anthropic headers even when a `responses` URL is saved beside it — that one case is all that changed, and every other provider's header groups are chosen exactly as before. The `metadata.user_id` asks a wider question than the headers do: a provider with an anthropic endpoint gets it even while its headers follow another group.
+- An `extraBody.metadata` you wrote or edited by hand is never overwritten or deleted: the plugin only claims the field while it carries the base id this install persists, so an id copied in from another machine's Claude Code is left alone even if the plugin's own ledger still names the provider.
+- The user_id needs **magpie v0.1.1191 or newer**: that is the first release that reads a provider's `extraBody` (commit `863af7a`, #1604). Below it the field is written and silently ignored. Where magpie records the version it last ran (`last-version`, written by the desktop app), the plugin warns in its log; on a headless `magpie web` there is no such file, so it says nothing and this line in the README is the only notice you get.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Tool-schema diagnostics (optional)
+
+Since 1.8.0 the diagnostics ride the middleware. They used to be in the gateway hook, which wrote them to `ua-switcher-tools.json` beside the config; that hook is what made magpie copy every request body into the Bun host, so it is gone. Turn them on through the plugin's options — not `ua-switcher.json`, because moejs cannot read files:
+
+```bash
+magpie plugin options ua-switcher '{"diagnose":true}'
+```
+
+or the **Options** button of this plugin in magpie's Plugins › Installed. Each request that carries tools then names, in magpie's log, the tools Anthropic would reject (a top-level `oneOf`/`allOf`/`anyOf`, or no top-level `type`), once per shape. Read-only: the request is never modified. Turn it off with `magpie plugin options ua-switcher off`.
+
+Anthropic's Messages API refuses a tool whose `input_schema` has a union at the top level; an MCP tool that expresses mutual exclusion with zod's `.refine()` lands exactly there, so only a real Anthropic endpoint reports `input_schema does not support oneOf, allOf, or anyOf at the top level` while a GLM-style upstream takes it. The diagnostics name the tool.
 
 ## Tool-schema compatibility (gateway middleware)
 
@@ -172,4 +189,5 @@ Then `plugin off` / `plugin on` (or restart magpie) so the loaded middleware pic
 
 Special thanks to our community contributors for their great work:
 - [@bearchild233](https://github.com/bearchild233) (Yu Xiaoxiang): Submitted [PR #1](https://github.com/x1051445024/magpie-ua-switcher/pull/1), identifying and fixing config directory resolution across Docker, XDG, and portable environments, symlink & file permission preservation, and port watchdog self-healing.
+- [@bearchild233](https://github.com/bearchild233) again: reported `magpie-bun` being OOM-killed in a memory-limited Docker container, with kernel logs and a root-cause walkthrough. 1.8.0 — dropping the gateway hook and moving `metadata.user_id` onto magpie's own `extraBody` — is built on that report.
 
