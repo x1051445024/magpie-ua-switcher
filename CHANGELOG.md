@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.1 — 2026-11-04
+
+**文档版：把 extraBody 的覆盖边界送达安装副本 / Docs only: the extraBody boundaries reach the installed package**
+
+- 代码零改动，189 项 selftest 断言与 1.8.0 完全一致。
+- 存在的理由：`README` 与 `CHANGELOG` 也在打包的 `files` 里，而 1.8.0 的 tag 指向发布提交——所以 1.8.0 之后补进 `main` 的边界说明，用户 `magpie plugin update` 装到的那份文档里看不到。这一版只为了让那段话到达安装目录。
+- 补上的内容（见 1.8.0 条目之后的 `main` 提交 `6193af6`）：
+  - **由 auth 插件承载的 provider 不被覆盖**，这是相对 1.7.0 的真实损失（原措辞"已登录账号"写窄了）。magpie 只在 provider 由 `providers.json` 构造且无登录账号时读取 `extraBody`；插件承载的 provider 带 `Account`，字段既写不进也会被丢弃。
+  - Gemini 基座与混线 provider 两个边界各自的后果与日志提示。
+  - **已实测通过严格中转站**的记录，以及一条自查陷阱：模型名必须带 `providerID/modelID` 前缀，裸模型名会被路由到 magpie 挑的任意一家，据此得出的"通过"不成立。
+- 已知遗留（未在本版处理）：`/state` 的 `version` 字段是硬编码的，与 `package.json` 各写一份，升版要同时改两处。
+
 ## 1.8.0 — 2026-11-04
 
 **移除 gateway 钩子：`metadata.user_id` 改走 magpie 原生 extraBody / Drop the gateway hook; the user_id rides magpie's own extraBody**

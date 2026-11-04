@@ -1038,7 +1038,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.8.0",
+    version: "1.8.1",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
