@@ -1333,9 +1333,10 @@
       return rows;
     }
 
-    // One reader for both the draft snapshot and the commit, so what the cards show
-    // is exactly what 保存 sends. strict=true throws on an illegal header (the button
-    // path); a snapshot skips that row and leaves the throw to the button.
+    // One reader for both the draft snapshot and the commit. `rows` is every row as
+    // typed - half-filled, empty or illegal included - so a rebuild can put the
+    // editor back exactly as it was. `obj.headers` is only the valid subset, which is
+    // what 保存 sends. strict=true (the button) throws instead of staying quiet.
     function readCpCard(c, strict) {
       const id = c.dataset.id;
       const prev =
@@ -1345,16 +1346,14 @@
       const label = c.querySelector(".cp-lbl").value.trim() || id;
       const ua = c.querySelector(".cp-ua").value.trim();
       const headers = {};
-      let blank = 0; // rows the user added and has not filled yet: no data, but they must not vanish
+      const rows = [];
       c.querySelectorAll(".hdr-row").forEach((row) => {
         const proto = row.querySelector(".hdr-proto").value;
         const kInput = row.querySelector(".hdr-k");
         const k = kInput.value.trim();
         const v = row.querySelector(".hdr-v").value.trim();
-        if (!k && !v) {
-          blank++;
-          return;
-        }
+        rows.push({ proto, k, v });
+        if (!k && !v) return;
         if (!HEADER_KEY_RE.test(k) || FORBIDDEN_HEADERS.has(k.toLowerCase())) {
           if (!strict) return;
           kInput.classList.add("invalid");
@@ -1372,14 +1371,14 @@
       if (!prev.forms) nextObj.ua = ua;
       if (Object.keys(headers).length) nextObj.headers = headers;
       else delete nextObj.headers;
-      return { id, obj: nextObj, blank };
+      return { id, obj: nextObj, rows };
     }
 
     function snapshotCpCard(card) {
       if (!card) return;
       try {
-        const { id, obj, blank } = readCpCard(card, false);
-        cpDraft[id] = { ...obj, blank };
+        const { id, obj, rows } = readCpCard(card, false);
+        cpDraft[id] = { ...obj, rows };
       } catch (e) {
         toast(e.message || "草稿快照失败", true);
       }
@@ -1414,9 +1413,8 @@
       }
 
       list.innerHTML = entries.map(([id, p]) => {
-        const hdrRows = flattenCustomHeaders(p.headers || (p.raw && p.raw.headers));
-        // a draft's unfilled rows carry no data, so they are re-emitted from blank
-        const blanks = Array.from({ length: Math.max(0, Math.min(20, Number(p.blank) || 0)) }, () => ({ proto: "any" }));
+        // A draft carries its rows verbatim; a saved profile is read back from headers.
+        const hdrRows = Array.isArray(p.rows) ? p.rows : flattenCustomHeaders(p.headers || (p.raw && p.raw.headers));
         return `
           <div class="cp-item cp-card" data-id="${esc(id)}">
             <div class="cp-row">
@@ -1429,7 +1427,7 @@
               <input type="text" class="cp-ua mono" value="${esc(p.ua || "")}" placeholder="User-Agent 字符串 (1-512 字符)" style="width:100%" ${p.forms ? "disabled title='多形态 forms 预设保持原结构'" : ""}>
             </div>
             <div class="hdr-list">
-              ${hdrRows.concat(blanks).map((r) => `
+              ${hdrRows.map((r) => `
                 <div class="hdr-row">${hdrRowHtml(r)}</div>
               `).join("")}
             </div>

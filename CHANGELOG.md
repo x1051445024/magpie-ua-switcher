@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.5 — 2026-11-06
+
+**草稿按行原样保存，不再只数空行 / Drafts keep every row verbatim, not a count of blanks**
+
+- **1.8.4 的修法漏了一半**：它"数出空行、渲染时补回"，但只填了名字、值还没打的行——`!k && !v` 不成立、又过不了 `!v` 校验——于是**既没进 headers 也没被计入 blank**，下一次 `load(true)` 照样消失。这条是在**已安装的线上副本**上跑到一半实测到的（`rows: 0`），而半填正是打字过程中最常停留的状态。
+- **改成按行原样存**：`readCpCard` 把每一行（空行、半填行、非法行都算）记进 `rows`，快照写进 `cpDraft[id].rows`，渲染时 `Array.isArray(p.rows) ? p.rows : flattenCustomHeaders(...)`；提交仍只发 `obj`，`rows` 是纯前端字段，实测落盘那份 profile 的键只有 `label,ua,headers`。blank 计数整套删除。
+- **顺带的收益**：非法字段名的行现在留在原位、保存时才报错并指名道姓，不再静默消失。
+- **实测**（开发副本实例，显式 `load(true)` tick）：空行经 2 tick 仍在；半填行 `X-Half=` 经 2 tick 文本保住且 `payloadHeaders: null`；补完值 → headers 出现；保存后 `draftKeys: []` 且磁盘无 `rows` 字段；再加一行 `Bad Name:` → 经 2 tick 留在原位，点保存得到「预设 rows-test 含非法或受保护的 Header 字段名: Bad Name:」。
+- **selftest 240 → 242 项**：把 1.8.4 的 5 项计数断言换成 6 项按行断言，其中 5 项用一个假 card 真跑 `readCpCard`（行序与半填内容、payload 不含非法/未完成行、strict 抛错 vs 快照静默）。
+- **方法上记一句**：1.8.4 和 1.8.5 两个 bug 都是"在线上副本再跑一遍"抓出来的，开发实例跑不出第二个——同一份代码值得两条车道各跑一次。
+
 ## 1.8.4 — 2026-11-06
 
 **没填的 header 行不再在轮询下消失 / An unfilled header row survives the poll**

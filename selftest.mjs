@@ -691,14 +691,15 @@ eq("mw conflicting anyOf branch count", mr.tools[0].input_schema.properties.mode
   eq("ui: no missing base throws", ad(undefined, { a: null }), {})
   eq("ui: the server's own map is never mutated", Object.keys(srv).join(","), "a,b")
 
-  // A row the user added but has not filled carries no data — it used to disappear
-  // under their cursor on the next tick. readCpCard counts those and the render puts
-  // them back; the commit payload must stay clean of the count.
-  eq("ui: an unfilled header row is counted, not dropped", /if \(!k && !v\) \{\s*\n\s*blank\+\+;/.test(ui), true)
-  eq("ui: the count rides the draft", /cpDraft\[id\] = \{ \.\.\.obj, blank \}/.test(ui), true)
-  eq("ui: blanks are re-emitted behind the real rows", /hdrRows\.concat\(blanks\)/.test(ui), true)
+  // A row the user has not finished typing carries no header, but it must still be
+  // there after the next tick: the draft keeps every row verbatim, and only the
+  // valid ones go into what 保存 sends.
+  eq("ui: every row is captured, filled or not", /rows\.push\(\{ proto, k, v \}\);/.test(ui), true)
+  eq("ui: the draft carries the rows", /cpDraft\[id\] = \{ \.\.\.obj, rows \}/.test(ui), true)
+  eq("ui: a draft card renders its own rows", /Array\.isArray\(p\.rows\) \? p\.rows : flattenCustomHeaders/.test(ui), true)
   eq("ui: one row template for the render and for 添加", /div\.innerHTML = hdrRowHtml\(/.test(ui), true)
-  eq("ui: the commit sends obj only, never the count", /const \{ id, obj \} = readCpCard\(c, true\)/.test(ui), true)
+  eq("ui: the commit sends obj only, never the rows", /const \{ id, obj \} = readCpCard\(c, true\)/.test(ui), true)
+  eq("ui: no row-counting trick left behind", /blank/.test(ui), false)
 
   const rcSrc = ui.match(/function readCpCard[\s\S]*?\n    }/)[0]
   const input = (v) => ({ value: v, classList: { add() {}, remove() {} } })
@@ -720,14 +721,15 @@ eq("mw conflicting anyOf branch count", mr.tools[0].input_schema.properties.mode
     "FORBIDDEN_HEADERS",
     rcSrc + "; return readCpCard;",
   )({}, { customProfiles: {} }, /^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,64}$/, new Set(["authorization", "host"]))
-  const blankOnly = readCpCard(fakeCard("x", "X", "MyAgent/1.0", [{ k: "", v: "" }]), false)
-  eq("ui: an empty row is a blank, not a header", [blankOnly.blank, JSON.stringify(blankOnly.obj.headers ?? null)], [1, "null"])
-  const mixed = readCpCard(fakeCard("x", "X", "MyAgent/1.0", [{ k: "X-Tag", v: "hi" }, { k: "", v: "" }]), false)
-  eq("ui: filled and empty rows both survive the snapshot", [mixed.blank, JSON.stringify(mixed.obj.headers)], [1, '{"any":{"X-Tag":"hi"}}'])
-  eq("ui: the payload object has no blank key", Object.keys(mixed.obj).sort().join(","), "headers,label,ua")
+  const half = readCpCard(fakeCard("x", "X", "MyAgent/1.0", [{ k: "X-Tag", v: "" }, { k: "", v: "" }, { k: "Bad Name:", v: "y" }]), false)
+  eq("ui: rows keep their order and their half-typed content", half.rows.map((r) => `${r.proto}/${r.k}/${r.v}`).join(" | "), "any/X-Tag/ | any// | any/Bad Name:/y")
+  eq("ui: nothing unfinished or illegal reaches the payload", JSON.stringify(half.obj.headers ?? null), "null")
+  eq("ui: a half-typed row is not silently dropped from the draft", Object.keys(half.obj).sort().join(","), "label,ua")
+  const filled = readCpCard(fakeCard("x", "X", "MyAgent/1.0", [{ k: "X-Tag", v: "hi" }]), false)
+  eq("ui: a filled row is both a row and a header", [filled.rows.length, JSON.stringify(filled.obj.headers)].join(","), '1,{"any":{"X-Tag":"hi"}}')
   const forbidden = fakeCard("x", "X", "U", [{ k: "Authorization", v: "Bearer x" }])
   eq("ui: strict still throws on a protected header", (() => { try { readCpCard(forbidden, true); return "no throw"; } catch (e) { return /受保护/.test(e.message) ? "throws" : e.message; } })(), "throws")
-  eq("ui: a snapshot skips it instead of throwing", (() => { const r = readCpCard(forbidden, false); return [r.blank, JSON.stringify(r.obj.headers ?? null)].join(",") })(), "0,null")
+  eq("ui: a snapshot keeps the row and stays quiet", (() => { const r = readCpCard(forbidden, false); return [r.rows.length, JSON.stringify(r.obj.headers ?? null)].join(",") })(), "1,null")
 }
 
 // --- paths.mjs: magpie's folder as appdir.Config() decides it ---
