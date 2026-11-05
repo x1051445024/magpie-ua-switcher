@@ -1345,12 +1345,16 @@
       const label = c.querySelector(".cp-lbl").value.trim() || id;
       const ua = c.querySelector(".cp-ua").value.trim();
       const headers = {};
+      let blank = 0; // rows the user added and has not filled yet: no data, but they must not vanish
       c.querySelectorAll(".hdr-row").forEach((row) => {
         const proto = row.querySelector(".hdr-proto").value;
         const kInput = row.querySelector(".hdr-k");
         const k = kInput.value.trim();
         const v = row.querySelector(".hdr-v").value.trim();
-        if (!k && !v) return;
+        if (!k && !v) {
+          blank++;
+          return;
+        }
         if (!HEADER_KEY_RE.test(k) || FORBIDDEN_HEADERS.has(k.toLowerCase())) {
           if (!strict) return;
           kInput.classList.add("invalid");
@@ -1368,18 +1372,33 @@
       if (!prev.forms) nextObj.ua = ua;
       if (Object.keys(headers).length) nextObj.headers = headers;
       else delete nextObj.headers;
-      return { id, obj: nextObj };
+      return { id, obj: nextObj, blank };
     }
 
     function snapshotCpCard(card) {
       if (!card) return;
       try {
-        const { id, obj } = readCpCard(card, false);
-        cpDraft[id] = obj;
+        const { id, obj, blank } = readCpCard(card, false);
+        cpDraft[id] = { ...obj, blank };
       } catch (e) {
         toast(e.message || "草稿快照失败", true);
       }
       updateDraftTags();
+    }
+
+    // One row template, shared by the render and by 「+ 添加 Header」, so the two
+    // can never drift apart.
+    function hdrRowHtml(r) {
+      const proto = (r && r.proto) || "any";
+      return `
+                  <select class="hdr-proto">
+                    <option value="any" ${proto === "any" ? "selected" : ""}>any (全协议)</option>
+                    <option value="anthropic" ${proto === "anthropic" ? "selected" : ""}>anthropic</option>
+                    <option value="openai" ${proto === "openai" ? "selected" : ""}>openai</option>
+                  </select>
+                  <input type="text" class="hdr-k mono" value="${esc(r && r.k)}" placeholder="Header 名称 (如 X-Tag)">
+                  <input type="text" class="hdr-v mono" value="${esc(r && r.v)}" placeholder="Header 值">
+                  <button type="button" class="btn-sm btn-danger hdr-rm">✕</button>`;
     }
 
     function renderCustomProfiles(force) {
@@ -1396,6 +1415,8 @@
 
       list.innerHTML = entries.map(([id, p]) => {
         const hdrRows = flattenCustomHeaders(p.headers || (p.raw && p.raw.headers));
+        // a draft's unfilled rows carry no data, so they are re-emitted from blank
+        const blanks = Array.from({ length: Math.max(0, Math.min(20, Number(p.blank) || 0)) }, () => ({ proto: "any" }));
         return `
           <div class="cp-item cp-card" data-id="${esc(id)}">
             <div class="cp-row">
@@ -1408,17 +1429,8 @@
               <input type="text" class="cp-ua mono" value="${esc(p.ua || "")}" placeholder="User-Agent 字符串 (1-512 字符)" style="width:100%" ${p.forms ? "disabled title='多形态 forms 预设保持原结构'" : ""}>
             </div>
             <div class="hdr-list">
-              ${hdrRows.map((r) => `
-                <div class="hdr-row">
-                  <select class="hdr-proto">
-                    <option value="any" ${r.proto === "any" ? "selected" : ""}>any (全协议)</option>
-                    <option value="anthropic" ${r.proto === "anthropic" ? "selected" : ""}>anthropic</option>
-                    <option value="openai" ${r.proto === "openai" ? "selected" : ""}>openai</option>
-                  </select>
-                  <input type="text" class="hdr-k mono" value="${esc(r.k)}" placeholder="Header 名称 (如 X-Tag)">
-                  <input type="text" class="hdr-v mono" value="${esc(r.v)}" placeholder="Header 值">
-                  <button type="button" class="btn-sm btn-danger hdr-rm">✕</button>
-                </div>
+              ${hdrRows.concat(blanks).map((r) => `
+                <div class="hdr-row">${hdrRowHtml(r)}</div>
               `).join("")}
             </div>
           </div>
@@ -1441,16 +1453,7 @@
           const hdrList = card.querySelector(".hdr-list");
           const div = document.createElement("div");
           div.className = "hdr-row";
-          div.innerHTML = `
-            <select class="hdr-proto">
-              <option value="any">any (全协议)</option>
-              <option value="anthropic">anthropic</option>
-              <option value="openai">openai</option>
-            </select>
-            <input type="text" class="hdr-k mono" placeholder="Header 名称 (如 X-Custom-Client)">
-            <input type="text" class="hdr-v mono" placeholder="Header 值">
-            <button type="button" class="btn-sm btn-danger hdr-rm">✕</button>
-          `;
+          div.innerHTML = hdrRowHtml({ proto: "any" });
           div.querySelector(".hdr-rm").onclick = () => {
             div.remove();
             snapshotCpCard(card);

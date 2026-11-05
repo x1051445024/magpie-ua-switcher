@@ -1052,7 +1052,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.8.3",
+    version: "1.8.4",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,

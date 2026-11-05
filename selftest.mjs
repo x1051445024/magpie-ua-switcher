@@ -690,6 +690,44 @@ eq("mw conflicting anyOf branch count", mr.tools[0].input_schema.properties.mode
   eq("ui: an empty draft is the server's map", ad(srv, {}), srv)
   eq("ui: no missing base throws", ad(undefined, { a: null }), {})
   eq("ui: the server's own map is never mutated", Object.keys(srv).join(","), "a,b")
+
+  // A row the user added but has not filled carries no data — it used to disappear
+  // under their cursor on the next tick. readCpCard counts those and the render puts
+  // them back; the commit payload must stay clean of the count.
+  eq("ui: an unfilled header row is counted, not dropped", /if \(!k && !v\) \{\s*\n\s*blank\+\+;/.test(ui), true)
+  eq("ui: the count rides the draft", /cpDraft\[id\] = \{ \.\.\.obj, blank \}/.test(ui), true)
+  eq("ui: blanks are re-emitted behind the real rows", /hdrRows\.concat\(blanks\)/.test(ui), true)
+  eq("ui: one row template for the render and for 添加", /div\.innerHTML = hdrRowHtml\(/.test(ui), true)
+  eq("ui: the commit sends obj only, never the count", /const \{ id, obj \} = readCpCard\(c, true\)/.test(ui), true)
+
+  const rcSrc = ui.match(/function readCpCard[\s\S]*?\n    }/)[0]
+  const input = (v) => ({ value: v, classList: { add() {}, remove() {} } })
+  const fakeCard = (id, label, ua, rows) => ({
+    dataset: { id },
+    querySelector: (s) => (s === ".cp-lbl" ? input(label) : s === ".cp-ua" ? input(ua) : null),
+    querySelectorAll: (s) =>
+      s === ".hdr-row"
+        ? rows.map((r) => ({
+            querySelector: (k) =>
+              k === ".hdr-proto" ? input(r.proto || "any") : k === ".hdr-k" ? input(r.k) : input(r.v),
+          }))
+        : [],
+  })
+  const readCpCard = new Function(
+    "cpDraft",
+    "S",
+    "HEADER_KEY_RE",
+    "FORBIDDEN_HEADERS",
+    rcSrc + "; return readCpCard;",
+  )({}, { customProfiles: {} }, /^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,64}$/, new Set(["authorization", "host"]))
+  const blankOnly = readCpCard(fakeCard("x", "X", "MyAgent/1.0", [{ k: "", v: "" }]), false)
+  eq("ui: an empty row is a blank, not a header", [blankOnly.blank, JSON.stringify(blankOnly.obj.headers ?? null)], [1, "null"])
+  const mixed = readCpCard(fakeCard("x", "X", "MyAgent/1.0", [{ k: "X-Tag", v: "hi" }, { k: "", v: "" }]), false)
+  eq("ui: filled and empty rows both survive the snapshot", [mixed.blank, JSON.stringify(mixed.obj.headers)], [1, '{"any":{"X-Tag":"hi"}}'])
+  eq("ui: the payload object has no blank key", Object.keys(mixed.obj).sort().join(","), "headers,label,ua")
+  const forbidden = fakeCard("x", "X", "U", [{ k: "Authorization", v: "Bearer x" }])
+  eq("ui: strict still throws on a protected header", (() => { try { readCpCard(forbidden, true); return "no throw"; } catch (e) { return /受保护/.test(e.message) ? "throws" : e.message; } })(), "throws")
+  eq("ui: a snapshot skips it instead of throwing", (() => { const r = readCpCard(forbidden, false); return [r.blank, JSON.stringify(r.obj.headers ?? null)].join(",") })(), "0,null")
 }
 
 // --- paths.mjs: magpie's folder as appdir.Config() decides it ---

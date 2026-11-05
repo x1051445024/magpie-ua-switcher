@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.4 — 2026-11-06
+
+**没填的 header 行不再在轮询下消失 / An unfilled header row survives the poll**
+
+- **怎么漏的**：1.8.3 的草稿救回了"有数据的行"，但空行没有——`readCpCard` 里 `if (!k && !v) return;` 直接跳过，于是点完「+ 添加 Header」、字还没打的那一行，会被下一次 `load(true)` 重建掉。这条不是推演：是在**已安装的线上副本**上做接线检查时实测到的（`hdrRows: 0`）。教训顺带记一笔：线上与开发副本代码一致，不代表可以省掉在线上那一次。
+- **改法**：`readCpCard` 数出空行并返回 `blank`，快照存进 `cpDraft[id].blank`，渲染时 `hdrRows.concat(blanks)` 补回（上限 20 行，防脏值）；提交仍只发 `obj`，`blank` 进不了 payload。行的 markup 抽成 `hdrRowHtml()`，渲染与「+ 添加 Header」共用一份，避免两处漂移。
+- **实测**（开发副本实例，显式 `load(true)` tick，不用墙钟）：空行经 2 个 tick 仍在（`rows: 1`、`blank: 1`）；填上值后 `blank` 归 0、值保住；再加一个空行并 blur → 2 行、顺序 `X-Blank,(blank)`；保存后服务端那份只有真头、草稿清空、卡片回到 1 行。
+- **selftest 230 → 240 项**：5 项盯接线，5 项用一个假 card 真跑 `readCpCard`（空行计数、混合行、payload 不含 blank、strict 抛错 vs 快照跳过）。
+
 ## 1.8.3 — 2026-11-06
 
 **轮询不再吃掉未保存的编辑；`/state` 不再每次重读 providers.json / The poll stops eating unsaved edits; /state stops re-reading providers.json**
