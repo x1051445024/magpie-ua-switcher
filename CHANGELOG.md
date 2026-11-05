@@ -1,11 +1,26 @@
 # Changelog
 
+## 1.8.2 — 2026-11-06
+
+**路由下拉框改为即时保存 / The routing dropdowns commit on change**
+
+- **现象**：「Provider 路由与排除矩阵」里给某个 provider 选了档案或「排除」，几秒后自己跳回 🔗 跟随全局，配置里从未出现过这条覆盖。
+- **根因（纯前端，与 1.8.0 的改动无关）**：`.prov-route-sel` 没有 change 处理器，它的值只在点「保存路由设置」时被读一次；页面每 3 秒 `load(true)` 拉 `/state` 并整表重建，`renderProviderTable()` 按 `S.providerOverrides` 回写——没提交过的选择在下一轮渲染里被抹掉。后端是清白的：直接向 `/config` POST `{"providerOverrides":{"agent":"codex"}}`，文件与 `/state` 6 秒以上保持该值；1.8.0 新增的 `appliedMeta` 落账也不会覆盖 `providerOverrides`。同一页面里 `#sw-metadata` 开关是即存的，两处行为本来就不一致。
+- **改法**：
+  - 用**事件委托**绑在 `#prov-tbody` 上（行会被重渲染，逐个绑定会随重建一起丢失），选完即提交 `excludeProviders + providerOverrides`；「保存路由设置」保留，作为对当前列表的整批提交。
+  - 提交以 `S` 为底本、只折这一行的改动，所以搜索框过滤掉的行不会被顺手清空。
+  - 两处让路：POST 在飞时轮询不覆盖 `S`；某个下拉框还持焦时不重建这张表——原生弹层会随 `<select>` 被移除而关闭，正在做的选择一起丢。
+  - 顶部新增 `#route-hint` 提示条，区分「正在保存」与「正在操作」；保存被服务端拒绝时用真相重建那一行（`routeRenderForced`），不留一个没人认账的下拉框。
+- **实测**（开发副本单实例：端口 3499、临时配置与临时 providers，不碰本机安装）：锁定 `claude-code` 后 8 秒（≥2 个轮询周期）DOM、`/state`、配置文件三处一致，且该 provider 确实拿到了 claude-code 的全套头与 `metadata.user_id`（全局档案仍是 `off`）；排除、改回跟随全局、批量保存、以及构造一次被 400 拒绝的选择后回滚——四条路径逐条走查；切换全局档案不影响已锁定的行；深浅两套主题下提示条配色都过了一遍。selftest 从 189 项增至 **204 项**，新增 15 项：8 项盯 ui.html 的委托绑定与两处让路，6 项把 `deriveRouting` 抠出来真跑各种取值组合，1 项盯提交体的字段集合。
+- **装机生效**：`ui.html` 由插件按 mtime 每次请求重读（`index.mjs:1089` 的 `page()`），浏览器刷新页面即可拿到新交互，**不需要重启 magpie**；但 `/state` 的 `version` 是模块加载时的常量，要等插件宿主重载才显示 1.8.2——这条遗留仍记在 1.8.1 条目里。
+- **顺带更正 1.8.1 的一条说法**（见下方条目）：`github:` 安装并不按 `package.json` 的 `files` 筛选，为「让文档到达用户机器」而单独切一版并非必需。
+
 ## 1.8.1 — 2026-11-04
 
 **文档版：把 extraBody 的覆盖边界送达安装副本 / Docs only: the extraBody boundaries reach the installed package**
 
 - 代码零改动，189 项 selftest 断言与 1.8.0 完全一致。
-- 存在的理由：`README` 与 `CHANGELOG` 也在打包的 `files` 里，而 1.8.0 的 tag 指向发布提交——所以 1.8.0 之后补进 `main` 的边界说明，用户 `magpie plugin update` 装到的那份文档里看不到。这一版只为了让那段话到达安装目录。
+- 存在的理由（**此句由 1.8.2 复核更正**）：当时以为 `README` 与 `CHANGELOG` 靠 `package.json` 的 `files` 到达用户机器，而 1.8.0 之后补进 `main` 的边界说明在 1.8.0 那份里看不到。复核不成立：`CHANGELOG.md` 本来就不在 `files` 列表里，而本插件走 `github:` 安装，bun 取的是仓库归档、`files` 不参与筛选（本机 `install-cache/@GH@x1051445024-magpie-ua-switcher-ecc0c88@@@1/` 里 `CHANGELOG.md`、`selftest.mjs`、`docs/` 都在）。那批文档随下次更新本就会到达，为它单独切一版不是必需——本版已发布，实际作用只剩把 `version` 推到 1.8.1。
 - 补上的内容（见 1.8.0 条目之后的 `main` 提交 `6193af6`）：
   - **由 auth 插件承载的 provider 不被覆盖**，这是相对 1.7.0 的真实损失（原措辞"已登录账号"写窄了）。magpie 只在 provider 由 `providers.json` 构造且无登录账号时读取 `extraBody`；插件承载的 provider 带 `Account`，字段既写不进也会被丢弃。
   - Gemini 基座与混线 provider 两个边界各自的后果与日志提示。

@@ -622,6 +622,41 @@ mr = mw({ model: "m", tools: [conflictUnion] })
 eq("mw merges conflicting branch property as anyOf", Array.isArray(mr.tools[0].input_schema.properties.mode.anyOf), true)
 eq("mw conflicting anyOf branch count", mr.tools[0].input_schema.properties.mode.anyOf.length, 2)
 
+// --- ui.html: a routing choice is committed the moment it is made ---
+// 1.8.1 and earlier read these dropdowns only inside 「保存路由设置」. The page polls
+// /state every 3s and rebuilds the table from S, so a choice that was never posted got
+// replaced by the stored config a few seconds later and the row snapped back to 跟随全局.
+{
+  const ui = fs.readFileSync(new URL("./ui.html", import.meta.url), "utf8")
+  eq("ui: the dropdowns have a delegated change handler", /\$\("#prov-tbody"\)\.addEventListener\("change"/.test(ui), true)
+  eq("ui: the handler recognises a routing select", /closest\("\.prov-route-sel"\)/.test(ui), true)
+  eq("ui: a change seeds from S, so hidden rows keep their route", /deriveRouting\(sel\.dataset\.id, sel\.value, S\.excludeProviders, S\.providerOverrides\)/.test(ui), true)
+  eq("ui: the poll will not rebuild the table over an open dropdown", /if \(routeTableIsOpen\(\) && !routeRenderForced\) return;/.test(ui), true)
+  eq("ui: a commit the server rejected rebuilds the row anyway", /routeRenderForced = true;[\s\S]{0,40}await load\(true, true\)/.test(ui), true)
+  eq("ui: the poll will not overwrite S during a save", /if \(silent && routeBusy > 0 && !force\)/.test(ui), true)
+  eq("ui: the page resyncs from the server around every commit", /await load\(true, true\)/.test(ui), true)
+  eq("ui: offline preview keeps the choice in the front end", /演示模式：路由改动只停留在前端/.test(ui), true)
+  eq("ui: 「保存路由设置」 still batch-commits", /\$\("#save-routing"\)\.onclick/.test(ui), true)
+
+  // deriveRouting is the single place the two config fields are computed — run it.
+  const src = ui.match(/function deriveRouting[\s\S]*?\n    }/)[0]
+  const deriveRouting = new Function(src + "; return deriveRouting;")()
+  // order-insensitive view of the payload, since eq() compares JSON text
+  const dr = (id, val, ex, ov) => {
+    const r = deriveRouting(id, val, ex, ov)
+    return {
+      excludeProviders: [...r.excludeProviders].sort(),
+      providerOverrides: Object.keys(r.providerOverrides).sort().map((k) => `${k}=${r.providerOverrides[k]}`),
+    }
+  }
+  eq("ui: 跟随全局 clears both fields", dr("p1", "__global__", ["p1"], { p1: "codex" }), { excludeProviders: [], providerOverrides: [] })
+  eq("ui: 排除 replaces a stale lock", dr("p1", "__exclude__", [], { p1: "codex" }), { excludeProviders: ["p1"], providerOverrides: [] })
+  eq("ui: a lock replaces a stale exclusion", dr("p1", "claude-code", ["p1"], {}), { excludeProviders: [], providerOverrides: ["p1=claude-code"] })
+  eq("ui: rows outside the filter survive the commit", dr("p2", "codex", ["p1"], { p3: "pi" }), { excludeProviders: ["p1"], providerOverrides: ["p2=codex", "p3=pi"] })
+  eq("ui: an unset config does not throw", dr("p1", "__global__", undefined, undefined), { excludeProviders: [], providerOverrides: [] })
+  eq("ui: the posted body carries exactly the two fields", Object.keys(deriveRouting("p1", "codex", [], {})).sort(), ["excludeProviders", "providerOverrides"])
+}
+
 // --- paths.mjs: magpie's folder as appdir.Config() decides it ---
 const paths = await import("./paths.mjs")
 const ptmp = fs.mkdtempSync(path.join(os.tmpdir(), "ua-switcher-paths-"))

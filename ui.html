@@ -686,7 +686,7 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">Provider 路由与排除矩阵</h2>
-            <p class="section-desc">为指定 Provider 单独锁定伪装档案，或设为「排除」以保持 Magpie 原生默认请求头。</p>
+            <p class="section-desc">为指定 Provider 单独锁定伪装档案，或设为「排除」以保持 Magpie 原生默认请求头。下拉框一改即存；「保存路由设置」批量提交当前列表里的所有行。</p>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
             <input type="text" id="prov-filter" placeholder="搜索 Provider..." style="width:140px;padding:4px 8px">
@@ -695,6 +695,7 @@
         </div>
 
                 <div id="prov-warn" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:var(--radius-sm);background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.25);color:#fca5a5;font-size:0.86em"></div>
+        <div id="route-hint" style="display:none;margin-bottom:12px;padding:8px 14px;border-radius:var(--radius-sm);background:var(--primary-glow);border:1px solid var(--border);color:var(--primary);font-size:0.84em"></div>
         <div class="data-table-wrap">
           <table class="data-table">
             <thead>
@@ -795,6 +796,8 @@
     let S = null;
     let localLogs = [];
     let pollTimer = null;
+    let routeBusy = 0;
+    let routeRenderForced = false;
     const $ = (s) => document.querySelector(s);
 
     const esc = (s) =>
@@ -939,7 +942,14 @@
 
     let isOfflinePreview = false;
 
-    async function load(silent = false) {
+    async function load(silent = false, force = false) {
+      // A routing POST is in flight: S currently holds the user's choice, which the
+      // server has not echoed yet. Letting the poll overwrite it would snap the
+      // dropdown back to whatever was stored a second ago.
+      if (silent && routeBusy > 0 && !force) {
+        updateRouteHint();
+        return;
+      }
       try {
         if (window.location.protocol === "file:") throw new Error("file protocol preview");
         const r = await fetch("/state");
@@ -1134,10 +1144,89 @@
 
       // 5. Render Audit Logs
       renderAuditLogs();
+
+      // Every refresh re-reads whether a dropdown is still being operated, so the
+      // hint cannot outlive a focus change the page never saw an event for.
+      updateRouteHint();
+    }
+
+    function routeTableIsOpen() {
+      const af = document.activeElement;
+      return Boolean(af && af.classList && af.classList.contains("prov-route-sel"));
+    }
+
+    function updateRouteHint() {
+      const el = $("#route-hint");
+      if (!el) return;
+      let msg = "";
+      if (routeBusy) {
+        msg = "正在保存路由策略…";
+        if ($("#sw-poll")?.checked) msg += " 自动刷新已暂停。";
+      } else if (routeTableIsOpen()) {
+        msg = "路由下拉框正在操作中：这张表暂不重绘，其余状态照常自动刷新。";
+      }
+      el.textContent = msg;
+      el.style.display = msg ? "block" : "none";
+    }
+
+    // Fold one dropdown value onto the two config fields, seeded from the state we
+    // last read. Seeding from S (and not from the DOM) is what keeps a filtered
+    // table from silently clearing the overrides of the rows it is not showing.
+    function deriveRouting(id, value, excludeArr, overrideMap) {
+      const exSet = new Set(excludeArr || []);
+      const ovMap = { ...(overrideMap || {}) };
+      if (value === "__exclude__") {
+        exSet.add(id);
+        delete ovMap[id];
+      } else if (value === "__global__") {
+        exSet.delete(id);
+        delete ovMap[id];
+      } else {
+        exSet.delete(id);
+        ovMap[id] = value;
+      }
+      return { excludeProviders: Array.from(exSet), providerOverrides: ovMap };
+    }
+
+    async function postRouting(body, okMsg) {
+      if (isOfflinePreview) {
+        toast("演示模式：路由改动只停留在前端（实机生效需运行 Magpie 插件）");
+        return;
+      }
+      routeBusy++;
+      updateRouteHint();
+      try {
+        const r = await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        toast(okMsg);
+        await load(true, true);
+      } catch (e) {
+        // The server rejected or never got the patch: put the table back to the
+        // truth instead of leaving a choice on screen that nothing honours — even
+        // if that means closing a dropdown the user is still holding.
+        toast(e.message || "保存失败", true);
+        routeRenderForced = true;
+        await load(true, true);
+        routeRenderForced = false;
+      } finally {
+        routeBusy = Math.max(0, routeBusy - 1);
+        updateRouteHint();
+      }
     }
 
     function renderProviderTable() {
       if (!S) return;
+      // The 3s poll rebuilds this table from S. Never do that while the user is
+      // operating one of its dropdowns — the native popup closes when its <select>
+      // is removed, and the choice in flight is lost with it. A commit the server
+      // rejected sets routeRenderForced: then the row must be put back to the truth
+      // even with the dropdown still focused.
+      if (routeTableIsOpen() && !routeRenderForced) return;
+      routeRenderForced = false;
       const q = ($("#prov-filter")?.value || "").trim().toLowerCase();
       const tbody = $("#prov-tbody");
       const list = (S.providers || []).filter((p) =>
@@ -1318,38 +1407,35 @@
       }
     };
 
-    $("#save-routing").onclick = async () => {
-      const exSet = new Set(S.excludeProviders || []);
-      const ovMap = { ...(S.providerOverrides || {}) };
+    // One dropdown = one commit. These selects used to be submitted only by
+    // 「保存路由设置」, so a choice that was never posted got rebuilt from the stored
+    // config on the next poll — the dropdown silently reverted to 🔗 跟随全局 a few
+    // seconds after the user picked something.
+    $("#prov-tbody").addEventListener("change", (e) => {
+      const sel = e.target && e.target.closest ? e.target.closest(".prov-route-sel") : null;
+      if (!sel || !S) return;
+      const next = deriveRouting(sel.dataset.id, sel.value, S.excludeProviders, S.providerOverrides);
+      S.excludeProviders = next.excludeProviders;
+      S.providerOverrides = next.providerOverrides;
+      postRouting(next, "Provider " + sel.dataset.id + " 的路由策略已保存");
+    });
+
+    $("#prov-tbody").addEventListener("focusin", (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains("prov-route-sel")) updateRouteHint();
+    });
+    $("#prov-tbody").addEventListener("focusout", () => setTimeout(updateRouteHint, 0));
+
+    // Batch commit: folds every row currently in the (possibly filtered) table.
+    $("#save-routing").onclick = () => {
+      if (!S) return;
+      let ex = S.excludeProviders || [];
+      let ov = S.providerOverrides || {};
       document.querySelectorAll(".prov-route-sel").forEach((sel) => {
-        const id = sel.dataset.id;
-        const v = sel.value;
-        if (v === "__exclude__") {
-          exSet.add(id);
-          delete ovMap[id];
-        } else if (v === "__global__") {
-          exSet.delete(id);
-          delete ovMap[id];
-        } else {
-          exSet.delete(id);
-          ovMap[id] = v;
-        }
+        const next = deriveRouting(sel.dataset.id, sel.value, ex, ov);
+        ex = next.excludeProviders;
+        ov = next.providerOverrides;
       });
-      try {
-        const r = await fetch("/config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            excludeProviders: Array.from(exSet),
-            providerOverrides: ovMap
-          })
-        });
-        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
-        toast("Provider 路由与排除策略已保存");
-        load(true);
-      } catch (e) {
-        toast(e.message || "保存失败", true);
-      }
+      postRouting({ excludeProviders: ex, providerOverrides: ov }, "Provider 路由与排除策略已保存");
     };
 
     $("#save-ver").onclick = async () => {
