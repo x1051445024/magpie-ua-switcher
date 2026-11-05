@@ -657,6 +657,41 @@ eq("mw conflicting anyOf branch count", mr.tools[0].input_schema.properties.mode
   eq("ui: the posted body carries exactly the two fields", Object.keys(deriveRouting("p1", "codex", [], {})).sort(), ["excludeProviders", "providerOverrides"])
 }
 
+// --- ui.html 1.8.3: the two button-committed editors stop losing work to the poll ---
+// 1.8.2 fixed only the routing table. Version pins and the custom-profile studio are
+// the same shape — nothing is sent until their button is clicked — and the 3s poll
+// rebuilt both over the top of whatever was being typed. Header rows lived only in the
+// DOM, so even an added row vanished; a new card vanished with S being replaced.
+{
+  const ui = fs.readFileSync(new URL("./ui.html", import.meta.url), "utf8")
+  eq("ui: the version table stands down while a pin is focused", /if \(!force && sectionIsBeingEdited\("#ver-tbody"\)\) return;/.test(ui), true)
+  eq("ui: the studio stands down while it is being edited", /if \(!force && sectionIsBeingEdited\("#cp-list"\)\) return;/.test(ui), true)
+  eq("ui: a typed pin lands in the draft", /pinDraft\[i\.dataset\.key\] = i\.value;/.test(ui), true)
+  eq("ui: clearing a pin is a draft too", /pinDraft\[btn\.dataset\.key\] = ""/.test(ui), true)
+  eq("ui: the studio snapshots its cards on input", /\$\("#cp-list"\)\.addEventListener\("input"/.test(ui), true)
+  eq("ui: and on change, for the protocol picker", /\$\("#cp-list"\)\.addEventListener\("change"/.test(ui), true)
+  eq("ui: adding a header row snapshots", /hdrList\.appendChild\(div\);\s*\n\s*snapshotCpCard\(card\);/.test(ui), true)
+  eq("ui: removing a header row snapshots", /btn\.closest\("\.hdr-row"\)\.remove\(\);\s*\n\s*snapshotCpCard\(card\);/.test(ui), true)
+  eq("ui: deleting a saved card tombstones instead of editing S", /cpDraft\[id\] = null;/.test(ui), true)
+  eq("ui: a card that was only a draft is dropped outright", /else delete cpDraft\[id\];/.test(ui), true)
+  eq("ui: the studio no longer writes drafts into S", /S\.customProfiles\[id\] = \{/.test(ui), false)
+  eq("ui: a committed profile clears the profile draft", /cpDraft = \{\}; \/\/ committed/.test(ui), true)
+  eq("ui: a committed pin clears the pin draft", /pinDraft = \{\}; \/\/ committed/.test(ui), true)
+  eq("ui: one reader for the draft and the commit", /readCpCard\(c, true\)/.test(ui), true)
+  eq("ui: closing the tab with a draft warns", /addEventListener\("beforeunload"/.test(ui), true)
+  eq("ui: user-initiated renders are forced past the guard", /renderCustomProfiles\(true\)/.test(ui), true)
+
+  // applyDraft decides what the cards show: server truth with the draft folded over it.
+  const ad = new Function(ui.match(/function applyDraft[\s\S]*?\n    }/)[0] + "; return applyDraft;")()
+  const srv = { a: { label: "A" }, b: { label: "B" } }
+  eq("ui: a draft edits a saved profile", ad(srv, { a: { label: "A2" } }), { a: { label: "A2" }, b: { label: "B" } })
+  eq("ui: a tombstone hides a saved profile", ad(srv, { b: null }), { a: { label: "A" } })
+  eq("ui: a draft-only id still shows", ad(srv, { c: { label: "C" } }), { a: { label: "A" }, b: { label: "B" }, c: { label: "C" } })
+  eq("ui: an empty draft is the server's map", ad(srv, {}), srv)
+  eq("ui: no missing base throws", ad(undefined, { a: null }), {})
+  eq("ui: the server's own map is never mutated", Object.keys(srv).join(","), "a,b")
+}
+
 // --- paths.mjs: magpie's folder as appdir.Config() decides it ---
 const paths = await import("./paths.mjs")
 const ptmp = fs.mkdtempSync(path.join(os.tmpdir(), "ua-switcher-paths-"))
@@ -692,6 +727,40 @@ eq("legacy: nothing to copy", paths.adoptLegacy(path.join(ptmp, "xdg", "magpie",
 eq("legacy: same folder is left alone", paths.adoptLegacy(path.join(oldDir, "ua-switcher.json"), home), "")
 eq("legacy: non-whitelisted file refused", paths.adoptLegacy(path.join(ptmp, "xdg", "magpie", "evil.json"), home), "")
 fs.rmSync(ptmp, { recursive: true, force: true })
+
+// --- providersForUi(): /state must not re-read providers.json on every poll ---
+// The page polls every 3s; the config, the npm cache and the ASAR probe all keyed
+// off mtime already, but this one call parsed the whole file each time.
+{
+  const realRead = fs.readFileSync
+  let reads = 0
+  fs.readFileSync = (...a) => {
+    if (String(a[0]) === provPath) reads++
+    return realRead(...a)
+  }
+  const bumpMtime = () => {
+    const st = fs.statSync(provPath)
+    fs.utimesSync(provPath, new Date(), new Date(st.mtimeMs + 5000)) // mtime is the key
+  }
+  try {
+    await fetch(base + "/state") // the first call always reads: it arms the cache
+    reads = 0
+    await fetch(base + "/state")
+    await fetch(base + "/state")
+    eq("providers.json is not re-read while unchanged", reads, 0)
+    writeProviders((ps) => ps.push({ id: "p-added", key: "sk-x", baseURL: "https://d.example/anthropic" }))
+    bumpMtime()
+    reads = 0
+    const list = (await (await fetch(base + "/state")).json()).providers.map((p) => p.id)
+    eq("a providers.json written elsewhere is read once", reads, 1)
+    eq("and the provider added outside shows up", list.includes("p-added"), true)
+    reads = 0
+    await fetch(base + "/state")
+    eq("the cache re-arms behind that read", reads, 0)
+  } finally {
+    fs.readFileSync = realRead
+  }
+}
 
 console.error(failures ? `\n${failures} FAILURES` : "\nall tests passed")
 process.exit(failures ? 1 : 0)

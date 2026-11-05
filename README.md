@@ -41,7 +41,7 @@ magpie plugin add ./magpie-ua-switcher
 
 `plugin add` tells the running magpie to reload its plugin host — no app restart needed. Port handling is self-healing: on a conflict the plugin defers to another healthy instance of itself if one answers, keeps retrying for 30 seconds, and the request hook re-attempts the bind once a minute for as long as no instance holds the port.
 
-**Development**: this folder is the git repo itself. Edit, commit, push, then run `magpie plugin update github:x1051445024/magpie-ua-switcher` to pull the new version into magpie's managed install.
+**Development**: this folder is the git repo itself. Edit, commit, push, then run `magpie plugin update` to pull the new version into magpie's managed install. There is no per-plugin form: the spec argument is ignored and every plugin is updated (`internal/cli/plugins_cli.go`, `case "update", "upgrade":` → `plugin.Update(ctx)`). That command ends by restarting the plugin host (`internal/plugin/store.go`: `Update` → `Restart()`), so magpie itself needs no restart.
 
 ## Switch profiles
 
@@ -52,6 +52,7 @@ magpie plugin add ./magpie-ua-switcher
 - **Per-provider overrides**: a dropdown per provider (follow global / off / any profile)
 - **Custom profiles**: create / edit / delete (UA plus any / anthropic / openai header groups, one `key: value` per line); dual-form (`forms`) profiles stay read-only on the page to protect their shape — edit those in the config file
 - **Page font size**: slider or numeric input (12–24px) to pin a size, reset returns to the window-adaptive default; kept in the browser's localStorage, not the config file
+- **When an edit takes effect**: the profile cards, the exclusions and the per-provider dropdowns commit the moment you touch them. Version pins and custom profiles still commit through their button, but what you typed is held as a draft — tagged 「有未保存草稿」 next to the section title, kept across the page's 3-second refresh, warned about if you close the tab with it unsaved.
 
 **curl**:
 

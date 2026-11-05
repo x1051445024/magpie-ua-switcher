@@ -44,6 +44,7 @@ let ZCODE_DEVICE_MID_PATH = zcodeMidPath()
 
 let cache = { mtime: -1, cfg: null }
 let versionsCache = { mtime: -1, data: null }
+let providersUiCache = { mtime: -1, list: null, error: null } // read-only once cached
 let zcodeMidCache = { checkedAt: 0, mid: "" }
 let lastAppliedMtime = -1
 let lastProvidersMtime = -1
@@ -60,6 +61,7 @@ function refreshPaths() {
     ZCODE_DEVICE_MID_PATH = nextMid
     cache = { mtime: -1, cfg: DEFAULTS }
     versionsCache = { mtime: -1, data: null }
+    providersUiCache = { mtime: -1, list: null, error: null }
     zcodeMidCache = { checkedAt: 0, mid: "" }
     resetUserIdMemo() // the identity file moved with the config folder
     lastAppliedMtime = -1
@@ -994,6 +996,16 @@ function cleanProfiles(v) {
 // native entry of providers.json plus the plugin-declared zcode provider.
 function providersForUi() {
   refreshPaths()
+  // The page polls /state every 3s and this was the only part of that call that
+  // re-read a file every time; the config, the npm cache and the ASAR probe all
+  // key off mtime already. Treat providers.json the same way.
+  let st = null
+  try {
+    st = fs.statSync(PROVIDERS_PATH)
+  } catch {}
+  if (st && st.mtimeMs === providersUiCache.mtime && providersUiCache.list) {
+    return { list: providersUiCache.list, error: providersUiCache.error }
+  }
   const out = [{ id: "zcode", name: "ZCode（插件 provider）", off: false, wire: "anthropic" }]
   let error = null
   try {
@@ -1006,6 +1018,8 @@ function providersForUi() {
     error = e?.code === "ENOENT" ? "not found" : String(e?.message ?? e)
     note(`cannot read ${PROVIDERS_PATH}: ${error}`, "warn")
   }
+  // a file we could not stat is not cached: the next call tries again
+  providersUiCache = st ? { mtime: st.mtimeMs, list: out, error } : { mtime: -1, list: null, error: null }
   return { list: out, error }
 }
 
@@ -1038,7 +1052,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.8.2",
+    version: "1.8.3",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,

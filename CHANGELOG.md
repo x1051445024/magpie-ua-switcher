@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.8.3 — 2026-11-06
+
+**轮询不再吃掉未保存的编辑；`/state` 不再每次重读 providers.json / The poll stops eating unsaved edits; /state stops re-reading providers.json**
+
+- **背景**：1.8.2 只摆正了路由表。版本钉死与自定义预设工坊是同一个形状——改动只由按钮提交，而页面每 3 秒 `load(true)` → `render()` 整块重建，实测后果是：`.ver-pin` 里的输入被换节点清空（`sameNode: false`，焦点掉到 BODY）；自定义预设的新卡片随 `S` 被 `/state` 整体覆盖而整张消失；「+ 添加 Header」加出来的行只活在 DOM 里，同样消失。
+- **改法**（三条，都是让轮询给用户让路，而不是让用户迁就轮询）：
+  - `providersForUi()` 按 mtime 缓存，与配置文件、npm 缓存、ASAR 探测同一套做法。此前每次 `/state` 都整读并 `JSON.parse` 一遍 providers.json（本机 15,509 字节 / 16 个 provider，实测 0.16 ms；`/state` 整体中位 1.61 ms，页面一次 `render()` 中位 10.2 ms）。
+  - 焦点落在 `#ver-tbody` 或 `#cp-list` 内时这两块不重建（与 1.8.2 的路由表同一手法）；用户自己触发的重绘走 `force`，不会被守卫挡住。
+  - 未保存的编辑记进独立草稿：`pinDraft`（含 ✕ 清除）、`cpDraft`（编辑与新建，删除用 `null` 墓碑）。`load()` 只换 `S`，动不到草稿；提交成功后草稿清空，回到服务端真相。卡片的"读来快照"与"发去提交"共用 `readCpCard`，避免看到的不等于发出去的。
+- **顺带**：两个区块标题旁出现「有未保存草稿」标记；带草稿时版本行的来源徽章显示「草稿（未保存）」，不再一边是空的输入框一边声称「手动锁定」；带着草稿关标签页会先拦一次。
+- **实测方法本身被纠正了一次**：in-app 浏览器处于 `visibilityState: hidden`，Chrome 把 3 秒定时器节流——实测 10 秒内 `/state` 命中 **0 次**。所以本轮验证全部改用显式 `await load(true)`（正是轮询要调的那一句）跑 2–3 个 tick，而不是等墙钟四秒；1.8.2 那轮靠墙钟等待得出的几处结论，这次按 tick 重跑过，结论不变。逐条结果：路由 3 个 tick 后 `relay-b=pi` 与服务端两条覆盖都在；pin 2 个 tick 后同键重建、`7.7.7` 保住、徽章为「草稿（未保存）」，✕ 清除后 2 个 tick 仍为空；草稿卡片连同新加 header 行经 3 个 tick 全在，保存后 `draftKeys: []` 且服务端有该档案，删除墓碑经 3 个 tick 卡片不再出现，再保存后服务端清空。
+- **selftest 204 → 230 项**：16 项盯 ui.html 的守卫与草稿接线，6 项把 `applyDraft` 抠出来真跑（含"绝不改动服务端那份 map"），4 项靠临时替换 `fs.readFileSync` 数出 providers.json 的读次数（不变时 0 次、外部改动后恰好 1 次、读完重新武装）。
+- **更正两处自家文档**：① `magpie plugin update <spec>` 的 spec 参数被忽略——`internal/cli/plugins_cli.go:88` 的 `case "update", "upgrade":` 直接 `plugin.Update(ctx)`，README 里"只更新本插件"那句不成立；② `plugin.Update` 结尾会 `Restart()` 插件宿主（`internal/plugin/store.go:590`；`internal/plugin/host.go:683` 的注释明写 "a plugin updating never cuts a reply"），所以 1.8.0 条目里"升级后重启 magpie"并不必要。
+
 ## 1.8.2 — 2026-11-06
 
 **路由下拉框改为即时保存 / The routing dropdowns commit on change**
@@ -48,7 +62,7 @@
 - **顺带修掉一个既有缺陷**：`wireOf(p)` 原先先看「有没有 `responses` URL」，会遮蔽用户显式声明的 `baseAPI: "anthropic"`——magpie 的编辑器把 `chat`/`responses`/`anthropic`/`gemini` 与 `baseAPI` 分开保存（`internal/gui/providers.go:80`、`:91`），所以一个 Anthropic 中转站完全可能带着 responses URL。此前它会被判成 openai 线路，丢掉 `anthropic-version` / `anthropic-beta` / `X-Stainless-*` 而换上 responses 头。复审时指出更宽的重排会连带改变 `baseAPI` 缺省、`baseAPI: "chat"` 那批 provider 的头分组，因此最终版**只把显式 `baseAPI === "anthropic"` 提到最前**，其余分支与 1.7.0 逐字节等价（已加断言覆盖 `baseAPI: "chat"` + responses、缺省 + responses 两种旧行为）。「能否走 Messages」交给独立的 `messagesWire(p)` 判：比头的判据宽（有 `anthropic` 端点即算），并排除 `baseAPI: "gemini"`。
 - **extraBody 归属改为「本机 base id 认领」**：不再只信 `appliedMeta` 账本，也不只看形状。写入与撤回都以「该 `user_id` 是否带本机 `ua-switcher-userid.json` 里的 base 前缀」为准，账本仅在 base 读不到时兜底。于是：①用户在 magpie GUI 里改过的值不会被删；②从别的机器 `~/.claude.json` 抄来的真实 id 即使形状完全合法也不被认领、不被覆盖、切 `off` 也不删；③账本（`ua-switcher.json`）被重置而值仍是本机写的，切 `off` 仍能清干净，不留孤儿。`native_endpoints` 那条判据未采纳——providers.json 里没有这个字段，magpie 是按模型现算的（`internal/provider/native_endpoints.go:11`）。
 - **magpie 版本下限**：`internal/provider/extrabody.go` 在 v0.1.1190 尚不存在、v0.1.1191 首次出现（commit `863af7a`，2026-10-11，#1604）。低于 v0.1.1191 的 magpie 会忽略 `extraBody`，即**不报错也不注入**。运行期采取「只在有实证时提示」：读 magpie 桌面版写的 `last-version`（`internal/gui/whatsnew.go:127`），确认过旧才 warn 一次；无头 `magpie web` 没有这个文件，此时不猜测、不告警，仅由 README 声明下限。`/state.metadata` 新增 `minMagpieVersion` 与 `magpieVersion`（读不到为 null）。
-- **升级**：`magpie plugin update`（或重新 `magpie plugin add`）后重启 magpie，让插件宿主丢掉旧钩子。`/state` 新增 `metadata: {via, profiles, wires, providers}`，可据此确认注入已生效；`ua-switcher-userid.json` 沿用旧文件，身份不变。
+- **升级**：`magpie plugin update`（或重新 `magpie plugin add`）即可——两者结尾都会 `Restart()` 插件宿主（`internal/plugin/store.go`），旧钩子随之消失，**不必重启 magpie**（此句由 1.8.3 复核更正，原文写的是"升级后重启 magpie"）。`/state` 新增 `metadata: {via, profiles, wires, providers}`，可据此确认注入已生效；`ua-switcher-userid.json` 沿用旧文件，身份不变。
 - **文件移除**：`hooks.mjs` 已从仓库删除（`package.json` 的 `magpie.hooks` 与 `files` 同步去掉）。它自 1.8.0 起不再被任何代码加载，保留只会让人误以为钩子路径还在；需要恢复可从 v1.7.0 的 tag 取回（sha256 `cd0fd493…93f41a2`，7849 字节）。selftest 增加两条守卫：`package.json` 不再声明钩子、磁盘上也不存在该文件。
 - 测试：189 项断言（原 150），新增钩子缺席守卫、extraBody 写入/撤回/不覆盖/记账、`wireOf` 与 `messagesWire` 分离后的头分组零回归（`baseAPI: "chat"`、缺省、纯 Gemini、单 anthropic 端点四种形态）、base id 认领（外来真实 id 不覆盖不删除、账本丢失仍可回收）、版本下限提示等用例。
 - **致谢**：本版的起因是 [@bearchild233](https://github.com/bearchild233) (Yu Xiaoxiang) 的 OOM 报告——内存受限的 Docker 容器里 `magpie-bun` 被内核 `CONSTRAINT_MEMCG` 连续强杀，附了内核日志与根因分析。他在 [PR #1](https://github.com/x1051445024/magpie-ua-switcher/pull/1) 里对配置目录、软链接与权限的处理本版继续沿用。

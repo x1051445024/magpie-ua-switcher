@@ -719,7 +719,8 @@
             <h2 class="section-title">客户端版本控制与钉死</h2>
             <p class="section-desc">优先级：手动固定 (Pin) &gt; 本机 ASAR 探测 &gt; npm 自动同步 &gt; 官方内置。</p>
           </div>
-          <div style="display:flex;gap:6px">
+          <div style="display:flex;gap:6px;align-items:center">
+            <span class="badge badge-pin" id="ver-draft-tag" style="display:none">有未保存草稿</span>
             <button type="button" id="fetch-ver" class="btn-sm">☁️ 从 npm 刷新</button>
             <button type="button" id="save-ver" class="btn-primary btn-sm">保存固定版本</button>
           </div>
@@ -750,7 +751,8 @@
           <h2 class="section-title">自定义预设工坊 (Custom Profile Studio)</h2>
           <p class="section-desc">构建您专属的 User-Agent 与分协议请求头组合（受保护头如 Authorization / Host 会被自动安全拦截）。</p>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="badge badge-pin" id="cp-draft-tag" style="display:none">有未保存草稿</span>
           <button type="button" id="add-cp" class="btn-sm">+ 新建自定义预设</button>
           <button type="button" id="save-cp" class="btn-primary btn-sm">保存所有自定义预设</button>
         </div>
@@ -1094,50 +1096,7 @@
       renderProviderTable();
 
       // 3. Render Version Table
-      const verTbody = $("#ver-tbody");
-      const verEntries = Object.entries(verMap);
-      if (!verEntries.length) {
-        verTbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">暂无版本信息</td></tr>`;
-      } else {
-        const srcBadge = (src) => {
-          if (src === "pinned") return `<span class="badge badge-pin">手动锁定</span>`;
-          if (src === "detected") return `<span class="badge badge-detected">本机 ASAR</span>`;
-          if (src === "fetched") return `<span class="badge badge-fetched">npm 同步</span>`;
-          return `<span class="badge badge-muted">官方内置</span>`;
-        };
-        verTbody.innerHTML = verEntries.map(([k, v]) => {
-          const pinnedVal = (S.pins && S.pins[k]) || "";
-          const hasNewer = v.npmLatest && v.npmLatest !== v.inUse;
-          return `
-            <tr>
-              <td>
-                <div class="mono" style="font-weight:600">${esc(k)}</div>
-                ${v.npm ? `<div class="mono" style="font-size:0.78em;color:var(--text-muted)">${esc(v.npm)}</div>` : ""}
-              </td>
-              <td>
-                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                  <span class="mono" style="font-weight:600">${esc(v.inUse)}</span>
-                  ${srcBadge(v.source)}
-                </div>
-                ${hasNewer ? `<div style="font-size:0.78em;color:var(--primary-hover);margin-top:2px">npm 最新: <code class="mono">${esc(v.npmLatest)}</code></div>` : ""}
-              </td>
-              <td>
-                <div style="display:flex;gap:4px;align-items:center">
-                  <input type="text" class="ver-pin mono" data-key="${esc(k)}" value="${esc(pinnedVal)}" placeholder="如 2.1.310" style="width:105px;padding:4px 8px">
-                  ${pinnedVal ? `<button type="button" class="btn-sm btn-clear-pin" data-key="${esc(k)}" title="清除锁定">✕</button>` : ""}
-                </div>
-              </td>
-            </tr>
-          `;
-        }).join("");
-
-        verTbody.querySelectorAll(".btn-clear-pin").forEach((btn) => {
-          btn.onclick = () => {
-            const input = verTbody.querySelector(`.ver-pin[data-key="${CSS.escape(btn.dataset.key)}"]`);
-            if (input) input.value = "";
-          };
-        });
-      }
+      renderVersionTable();
 
       // 4. Render Custom Profiles
       renderCustomProfiles();
@@ -1150,9 +1109,41 @@
       updateRouteHint();
     }
 
-    function routeTableIsOpen() {
+    function sectionIsBeingEdited(sel) {
+      const root = $(sel);
       const af = document.activeElement;
-      return Boolean(af && af.classList && af.classList.contains("prov-route-sel"));
+      return Boolean(root && af && af !== root && root.contains(af));
+    }
+
+    function routeTableIsOpen() {
+      return sectionIsBeingEdited("#prov-tbody");
+    }
+
+    // ---- Drafts: the two editors that only commit through their button ----------
+    // /state replaces S wholesale and header rows live only in the DOM, so anything
+    // typed here used to be rebuilt away by the next poll tick. A draft holds what
+    // the server does not know yet; committing clears it and the truth takes over.
+    let cpDraft = {};
+    let pinDraft = {};
+
+    function applyDraft(base, draft) {
+      const out = { ...(base || {}) };
+      for (const [k, v] of Object.entries(draft || {})) {
+        if (v === null) delete out[k];
+        else out[k] = v;
+      }
+      return out;
+    }
+
+    function draftCount(draft) {
+      return Object.keys(draft || {}).length;
+    }
+
+    function updateDraftTags() {
+      const cp = $("#cp-draft-tag");
+      if (cp) cp.style.display = draftCount(cpDraft) ? "inline-block" : "none";
+      const ver = $("#ver-draft-tag");
+      if (ver) ver.style.display = draftCount(pinDraft) ? "inline-block" : "none";
     }
 
     function updateRouteHint() {
@@ -1266,6 +1257,68 @@
       }).join("");
     }
 
+    function renderVersionTable(force) {
+      if (!S) return;
+      // Same rule as the routing table: a poll must not rebuild rows the user is
+      // typing into. The pin itself is safe in pinDraft, but the caret is not.
+      if (!force && sectionIsBeingEdited("#ver-tbody")) return;
+      const verTbody = $("#ver-tbody");
+      const verEntries = Object.entries(getVersionValues());
+      if (!verEntries.length) {
+        verTbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">暂无版本信息</td></tr>`;
+        return;
+      }
+      const srcBadge = (src) => {
+        if (src === "pinned") return `<span class="badge badge-pin">手动锁定</span>`;
+        if (src === "detected") return `<span class="badge badge-detected">本机 ASAR</span>`;
+        if (src === "fetched") return `<span class="badge badge-fetched">npm 同步</span>`;
+        return `<span class="badge badge-muted">官方内置</span>`;
+      };
+      // The server's `source` still says 手动锁定 until a draft pin is committed, so a
+      // row whose draft differs from what is stored is labelled as a draft instead —
+      // an empty box over a badge claiming the version is already pinned is a lie.
+      const pinBadge = (k, v) => {
+        const drafted = k in pinDraft;
+        const eff = drafted ? pinDraft[k] : (S.pins && S.pins[k]) || "";
+        const saved = (S.pins && S.pins[k]) || "";
+        if (drafted && eff !== saved) return `<span class="badge badge-pin">草稿（未保存）</span>`;
+        return srcBadge(eff ? "pinned" : v.source);
+      };
+      verTbody.innerHTML = verEntries.map(([k, v]) => {
+        const pinnedVal = k in pinDraft ? pinDraft[k] : (S.pins && S.pins[k]) || "";
+        const hasNewer = v.npmLatest && v.npmLatest !== v.inUse;
+        return `
+          <tr>
+            <td>
+              <div class="mono" style="font-weight:600">${esc(k)}</div>
+              ${v.npm ? `<div class="mono" style="font-size:0.78em;color:var(--text-muted)">${esc(v.npm)}</div>` : ""}
+            </td>
+            <td>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <span class="mono" style="font-weight:600">${esc(v.inUse)}</span>
+                ${pinBadge(k, v)}
+              </div>
+              ${hasNewer ? `<div style="font-size:0.78em;color:var(--primary-hover);margin-top:2px">npm 最新: <code class="mono">${esc(v.npmLatest)}</code></div>` : ""}
+            </td>
+            <td>
+              <div style="display:flex;gap:4px;align-items:center">
+                <input type="text" class="ver-pin mono" data-key="${esc(k)}" value="${esc(pinnedVal)}" placeholder="如 2.1.310" style="width:105px;padding:4px 8px">
+                ${pinnedVal ? `<button type="button" class="btn-sm btn-clear-pin" data-key="${esc(k)}" title="清除锁定">✕</button>` : ""}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      verTbody.querySelectorAll(".btn-clear-pin").forEach((btn) => {
+        btn.onclick = () => {
+          pinDraft[btn.dataset.key] = "";
+          renderVersionTable(true);
+          updateDraftTags();
+        };
+      });
+    }
+
     function flattenCustomHeaders(headersObj) {
       const rows = [];
       if (!headersObj || typeof headersObj !== "object") return rows;
@@ -1280,8 +1333,60 @@
       return rows;
     }
 
-    function renderCustomProfiles() {
-      const cp = (S && S.customProfiles) || {};
+    // One reader for both the draft snapshot and the commit, so what the cards show
+    // is exactly what 保存 sends. strict=true throws on an illegal header (the button
+    // path); a snapshot skips that row and leaves the throw to the button.
+    function readCpCard(c, strict) {
+      const id = c.dataset.id;
+      const prev =
+        (cpDraft[id] && cpDraft[id].raw) ||
+        (S.customProfiles && S.customProfiles[id] && S.customProfiles[id].raw) ||
+        {};
+      const label = c.querySelector(".cp-lbl").value.trim() || id;
+      const ua = c.querySelector(".cp-ua").value.trim();
+      const headers = {};
+      c.querySelectorAll(".hdr-row").forEach((row) => {
+        const proto = row.querySelector(".hdr-proto").value;
+        const kInput = row.querySelector(".hdr-k");
+        const k = kInput.value.trim();
+        const v = row.querySelector(".hdr-v").value.trim();
+        if (!k && !v) return;
+        if (!HEADER_KEY_RE.test(k) || FORBIDDEN_HEADERS.has(k.toLowerCase())) {
+          if (!strict) return;
+          kInput.classList.add("invalid");
+          throw new Error(`预设 ${id} 含非法或受保护的 Header 字段名: ${k}`);
+        }
+        kInput.classList.remove("invalid");
+        if (!v || v.length > 512) {
+          if (!strict) return;
+          throw new Error(`预设 ${id} 的 Header ${k} 值不能为空且不超 512 字符`);
+        }
+        headers[proto] = headers[proto] || {};
+        headers[proto][k] = v;
+      });
+      const nextObj = { ...prev, label };
+      if (!prev.forms) nextObj.ua = ua;
+      if (Object.keys(headers).length) nextObj.headers = headers;
+      else delete nextObj.headers;
+      return { id, obj: nextObj };
+    }
+
+    function snapshotCpCard(card) {
+      if (!card) return;
+      try {
+        const { id, obj } = readCpCard(card, false);
+        cpDraft[id] = obj;
+      } catch (e) {
+        toast(e.message || "草稿快照失败", true);
+      }
+      updateDraftTags();
+    }
+
+    function renderCustomProfiles(force) {
+      // Poll-driven rebuilds stand down while the cursor is inside the studio: the
+      // header rows a user just added or removed exist only in this DOM.
+      if (!force && sectionIsBeingEdited("#cp-list")) return;
+      const cp = applyDraft((S && S.customProfiles) || {}, cpDraft);
       const list = $("#cp-list");
       const entries = Object.entries(cp);
       if (!entries.length) {
@@ -1322,9 +1427,11 @@
 
       list.querySelectorAll(".cp-del").forEach((btn) => {
         btn.onclick = () => {
-          const card = btn.closest(".cp-card");
-          delete S.customProfiles[card.dataset.id];
-          renderCustomProfiles();
+          const id = btn.closest(".cp-card").dataset.id;
+          if (S.customProfiles && S.customProfiles[id]) cpDraft[id] = null; // tombstone: the server still has it
+          else delete cpDraft[id]; // it was only ever a draft
+          renderCustomProfiles(true);
+          updateDraftTags();
         };
       });
 
@@ -1344,13 +1451,21 @@
             <input type="text" class="hdr-v mono" placeholder="Header 值">
             <button type="button" class="btn-sm btn-danger hdr-rm">✕</button>
           `;
-          div.querySelector(".hdr-rm").onclick = () => div.remove();
+          div.querySelector(".hdr-rm").onclick = () => {
+            div.remove();
+            snapshotCpCard(card);
+          };
           hdrList.appendChild(div);
+          snapshotCpCard(card);
         };
       });
 
       list.querySelectorAll(".hdr-rm").forEach((btn) => {
-        btn.onclick = () => btn.closest(".hdr-row").remove();
+        btn.onclick = () => {
+          const card = btn.closest(".cp-card");
+          btn.closest(".hdr-row").remove();
+          snapshotCpCard(card);
+        };
       });
     }
 
@@ -1425,6 +1540,28 @@
     });
     $("#prov-tbody").addEventListener("focusout", () => setTimeout(updateRouteHint, 0));
 
+    // The two button-committed editors snapshot themselves into drafts, so unsaved
+    // work survives both the 3s poll and a click anywhere else on the page.
+    $("#ver-tbody").addEventListener("input", (e) => {
+      const i = e.target && e.target.closest ? e.target.closest(".ver-pin") : null;
+      if (!i) return;
+      pinDraft[i.dataset.key] = i.value;
+      updateDraftTags();
+    });
+    $("#cp-list").addEventListener("input", (e) =>
+      snapshotCpCard(e.target && e.target.closest ? e.target.closest(".cp-card") : null)
+    );
+    $("#cp-list").addEventListener("change", (e) =>
+      snapshotCpCard(e.target && e.target.closest ? e.target.closest(".cp-card") : null)
+    );
+
+    window.addEventListener("beforeunload", (e) => {
+      if (draftCount(cpDraft) || draftCount(pinDraft)) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+
     // Batch commit: folds every row currently in the (possibly filtered) table.
     $("#save-routing").onclick = () => {
       if (!S) return;
@@ -1450,6 +1587,8 @@
           body: JSON.stringify({ versions: pins })
         });
         if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        pinDraft = {}; // committed: the pins now come from the server again
+        updateDraftTags();
         toast("版本固定设置已保存");
         load(true);
       } catch (e) {
@@ -1480,44 +1619,21 @@
         toast("无效或受保留的预设 ID", true);
         return;
       }
-      S.customProfiles = S.customProfiles || {};
-      if (S.customProfiles[id]) {
+      if (applyDraft(S.customProfiles || {}, cpDraft)[id]) {
         toast("该预设 ID 已存在", true);
         return;
       }
-      S.customProfiles[id] = { label: id, ua: "CustomAgent/1.0", headers: {}, raw: { label: id, ua: "CustomAgent/1.0" } };
-      renderCustomProfiles();
+      cpDraft[id] = { label: id, ua: "CustomAgent/1.0", headers: {}, raw: { label: id, ua: "CustomAgent/1.0" } };
+      renderCustomProfiles(true);
+      updateDraftTags();
     };
 
     $("#save-cp").onclick = async () => {
       const profiles = {};
       try {
         document.querySelectorAll(".cp-card").forEach((c) => {
-          const id = c.dataset.id;
-          const prev = (S.customProfiles && S.customProfiles[id] && S.customProfiles[id].raw) || {};
-          const label = c.querySelector(".cp-lbl").value.trim() || id;
-          const ua = c.querySelector(".cp-ua").value.trim();
-          const headers = {};
-          c.querySelectorAll(".hdr-row").forEach((row) => {
-            const proto = row.querySelector(".hdr-proto").value;
-            const kInput = row.querySelector(".hdr-k");
-            const k = kInput.value.trim();
-            const v = row.querySelector(".hdr-v").value.trim();
-            if (!k && !v) return;
-            if (!HEADER_KEY_RE.test(k) || FORBIDDEN_HEADERS.has(k.toLowerCase())) {
-              kInput.classList.add("invalid");
-              throw new Error(`预设 ${id} 含非法或受保护的 Header 字段名: ${k}`);
-            }
-            kInput.classList.remove("invalid");
-            if (!v || v.length > 512) throw new Error(`预设 ${id} 的 Header ${k} 值不能为空且不超 512 字符`);
-            headers[proto] = headers[proto] || {};
-            headers[proto][k] = v;
-          });
-          const nextObj = { ...prev, label };
-          if (!prev.forms) nextObj.ua = ua;
-          if (Object.keys(headers).length) nextObj.headers = headers;
-          else delete nextObj.headers;
-          profiles[id] = nextObj;
+          const { id, obj } = readCpCard(c, true);
+          profiles[id] = obj;
         });
 
         const r = await fetch("/config", {
@@ -1526,6 +1642,8 @@
           body: JSON.stringify({ profiles })
         });
         if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        cpDraft = {}; // committed: the server's copy is the truth again
+        updateDraftTags();
         toast("自定义预设已保存并热生效");
         load(true);
       } catch (e) {

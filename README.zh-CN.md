@@ -38,7 +38,7 @@ magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 
 `plugin add` 会通知运行中的 magpie 重载插件宿主，无需重启应用。端口处理自愈：冲突时若已有健康的本插件实例在服务则让位给它，否则重试绑定 30 秒；此后请求钩子每分钟自检重绑，直到端口有人接管。
 
-**开发调试**：本目录就是 git 仓库。改代码 → push → `magpie plugin update github:x1051445024/magpie-ua-switcher`，magpie 的托管安装即更新。
+**开发调试**：本目录就是 git 仓库。改代码 → push → `magpie plugin update`，magpie 的托管安装即更新。注意它没有单插件形式：spec 参数会被忽略，所有插件一起更新（`internal/cli/plugins_cli.go` 的 `case "update", "upgrade":` 直接调 `plugin.Update(ctx)`）；该命令结尾会 `Restart()` 插件宿主（`internal/plugin/store.go`），所以不必重启 magpie。
 
 ## 切换方式（网页可编辑一切）
 
@@ -49,6 +49,7 @@ magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 - **按 provider 覆盖**：每个 provider 一个下拉（跟随全局 / 关闭 / 任一档案）
 - **自定义档案**：新增 / 编辑 / 删除（UA + 通用、anthropic、openai 三组头，每行「键: 值」）；双形态（`forms`）档案为防编辑降级，网页只读、仍走配置文件
 - **页面字号**：滑块或数值（12–24px）固定字号，重置则恢复随窗口自适应；偏好存在浏览器本地（localStorage），不动配置文件
+- **改动何时生效**：档案卡片、排除列表、按 provider 覆盖都是**一改即存**；版本钉死与自定义档案仍要点各自的保存按钮，但你写的内容会先记成草稿——区块标题旁标「有未保存草稿」，页面每 3 秒的自动刷新不会抹掉它，带着草稿关标签页会先拦一次
 
 也可以 curl 或直接改配置文件（热生效）：
 
