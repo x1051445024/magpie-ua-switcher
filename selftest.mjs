@@ -56,9 +56,12 @@ eq("state endpoint", (await (await fetch(base + "/state")).json()).profile, "off
 eq("set via http", (await (await fetch(base + "/set/codex", { method: "POST" })).json()).profile, "codex")
 
 // codex × protocols
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 let h = await apply("any", "@ai-sdk/anthropic")
 eq("codex ua shape", /^codex_cli_rs\/0\.164\.0 \(.+; .+\) /.test(h["User-Agent"] ?? ""), true)
 eq("codex originator", h["originator"], "codex_cli_rs")
+eq("codex x-codex-window-id shape", UUID_RE.test(h["x-codex-window-id"] ?? ""), true)
+eq("codex session-id shape", UUID_RE.test(h["session-id"] ?? ""), true)
 eq("codex anthropic has no OpenAI-Beta", "OpenAI-Beta" in h, false)
 h = await apply("any", "@ai-sdk/openai-responses")
 eq("codex openai OpenAI-Beta", h["OpenAI-Beta"], "responses=experimental")
@@ -141,6 +144,8 @@ if (process.platform !== "win32") eq("native rewrite keeps providers.json 0600",
 eq("native rewrite leaves no temp file", fs.existsSync(provPath + ".ua-switcher.tmp"), false)
 eq("native responses UA", String(ps["p-responses"].headers["User-Agent"]).startsWith("codex_cli_rs/0.164.0 ("), true)
 eq("native responses originator+beta", [ps["p-responses"].headers["originator"], ps["p-responses"].headers["OpenAI-Beta"]], ["codex_cli_rs", "responses=experimental"])
+eq("native responses x-codex-window-id", UUID_RE.test(ps["p-responses"].headers["x-codex-window-id"] ?? ""), true)
+eq("native responses session-id", UUID_RE.test(ps["p-responses"].headers["session-id"] ?? ""), true)
 eq("native keeps user's own header", ps["p-responses"].headers["X-Keep"], "mine")
 eq("native anthropic no OpenAI-Beta", "OpenAI-Beta" in (ps["p-anthropic"].headers ?? {}), false)
 eq("native anthropic UA", ps["p-anthropic"].headers["User-Agent"].startsWith("codex_cli_rs/"), true)

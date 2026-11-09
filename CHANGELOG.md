@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.8.6 — 2026-11-09
+
+**补齐 Codex 引擎指纹头，解决 codex_cli_only 上游 403 / Complete Codex engine fingerprint headers to satisfy codex_cli_only upstreams**
+
+- **背景与根因**：用户在使用严格校验 Codex 官方客户端身份的上游（如 Sub2API 开启 `codex_cli_only: true`）时，遭遇 `403 Forbidden: {"error":{"message":"This account only allows Codex official clients","type":"forbidden_error"}}`。
+  - Sub2API 判定链第 4 步识别官方 UA / originator，第 5 步识别版本，第 6 步进入**引擎指纹硬门**（`EvaluateEngineFingerprint`）。
+  - Sub2API 默认内置规则 `{Type: "header_prefix", Match: ["x-codex-"], Required: true}`（依据官方客户端 98.8% 必带 `x-codex-window-id`）。若无 `x-codex-` 前缀头，统一走通用兜底文案拒绝。
+- **改法**：
+  - `codex` 预设在 `headers.any` 中补齐 `x-codex-window-id`（UUIDv4，进程生命周期稳定）与 `session-id`（同 UUID）。
+  - 自动穿透原生 `providers.json` 重写与 `chatHeaders` 运行时中间件。
+- **实测验证**：
+  - 对照测试：缺失指纹时返回 403 Forbidden；补齐 `x-codex-window-id` 后 200 OK 且 GPT-6.1 推理流顺畅返回。
+  - selftest 扩充至 220 项，全数通过。
+
 ## 1.8.5 — 2026-11-06
 
 **草稿按行原样保存，不再只数空行 / Drafts keep every row verbatim, not a count of blanks**

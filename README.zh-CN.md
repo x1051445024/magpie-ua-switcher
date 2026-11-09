@@ -74,7 +74,7 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 
 | id | User-Agent | 伴随头 |
 |---|---|---|
-| `codex` | `codex_cli_rs/0.164.0 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`；responses 协议另带 `OpenAI-Beta: responses=experimental` |
+| `codex` | `codex_cli_rs/0.164.0 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`、会话指纹 `x-codex-window-id`/`session-id`（UUID，满足 Sub2API `codex_cli_only` 引擎指纹硬门）；responses 协议另带 `OpenAI-Beta: responses=experimental` |
 | `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`；anthropic 协议另带 `anthropic-version`、`anthropic-beta: claude-code-20250219,…`、`X-Stainless-*` 全套 |
 | `pi` | anthropic 端点 `claude-cli/2.1.75`；responses 端点 `pi (win32 10.0.19045; x64)` | 与真实 pi 客户端行为一致，按请求的 SDK 包自动选形态 |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`、`X-ZCode-*`、`X-Device-Mid`（读本机真实设备 id）等 |

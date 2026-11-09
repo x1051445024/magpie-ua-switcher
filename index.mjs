@@ -24,7 +24,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { randomBytes } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 import {
   adoptLegacy,
   besideConfig,
@@ -112,6 +112,21 @@ function newOpencodeSessionId() {
 }
 const OPENCODE_SESSION_ID = newOpencodeSessionId()
 
+// Official codex_cli_rs generates an ephemeral window UUID on start and sends
+// companion fingerprint headers (x-codex-window-id, session-id). Strict upstream
+// gateways (such as Sub2API with codex_cli_only enabled) check this fingerprint gate.
+function newCodexSessionId() {
+  try {
+    return randomUUID()
+  } catch {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16)
+    })
+  }
+}
+const CODEX_SESSION_ID = newCodexSessionId()
+
 // Antigravity Hub build changelists, as published with each release. A version
 // missing here omits cl= entirely — claiming another build's CL would be a lie
 // the real manifests never tell.
@@ -154,7 +169,11 @@ function builtinProfiles(V) {
       label: "Codex CLI",
       ua: `codex_cli_rs/${V.codex} (${CODEX_OS_SEG}) ${TERMINAL}`,
       headers: {
-        any: { originator: "codex_cli_rs" },
+        any: {
+          originator: "codex_cli_rs",
+          "x-codex-window-id": CODEX_SESSION_ID,
+          "session-id": CODEX_SESSION_ID,
+        },
         openai: { "OpenAI-Beta": "responses=experimental" },
       },
     },

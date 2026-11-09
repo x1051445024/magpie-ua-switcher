@@ -77,7 +77,7 @@ The OS segment of codex/pi/antigravity UAs is generated from the machine the plu
 
 | id | User-Agent | companion headers |
 |---|---|---|
-| `codex` | `codex_cli_rs/0.164.0 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`; on the responses wire also `OpenAI-Beta: responses=experimental` |
+| `codex` | `codex_cli_rs/0.164.0 (Windows 10.0.19045; x86_64) WindowsTerminal` | `originator: codex_cli_rs`, session fingerprint `x-codex-window-id` and `session-id` (UUID, satisfies Sub2API `codex_cli_only` engine fingerprint gate); on the responses wire also `OpenAI-Beta: responses=experimental` |
 | `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`; on anthropic also `anthropic-version`, `anthropic-beta: claude-code-20250219,…`, full `X-Stainless-*` set |
 | `pi` | anthropic endpoints: `claude-cli/2.1.75`; responses endpoints: `pi (win32 10.0.19045; x64)` | exactly what the real pi client sends, picked per protocol |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`, `X-ZCode-*`, `X-Device-Mid` (read from the local device id when present) |
