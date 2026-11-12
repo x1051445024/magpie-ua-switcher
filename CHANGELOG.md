@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.8.8 - 2026-11-12
+
+**按 Claude Code 版本选择 metadata 身份编码 / Match metadata identity encoding to the Claude Code version**
+
+### 中文
+
+- 排查 [issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 时发现：默认 Claude Code UA 已高于 2.1.78，但 `metadata.user_id` 仍固定使用旧格式。现在实际生效的 `claude-cli/2.1.78` 及以上 UA 使用含 `device_id`、`account_uuid`、`session_id` 的 JSON 字符串，旧版继续使用原来的拼接字符串。
+- 格式选择遵循版本钉死、按 provider 覆盖及自定义 UA 的最终结果；升降版本保留同一组身份字段。原生 `extraBody` 注入方式保持不变。
+- 新旧编码都可识别为本插件写入的身份，关闭时正确清理；保留客户端 metadata、外部身份以及增加手工字段的身份。仅保存新版身份的文件也可继续复用原设备和账号基底。
+- 修正文档中补齐 UA 和 metadata 就能通过所有严格中转站的说法。系统提示词和中转站自身的身份校验仍可能导致拒绝；本次没有改写调用方系统提示词。
+- 验证：330 项隔离回归断言通过；真实 Magpie 的隔离 Messages 链路验证了默认新版、降级、升级、客户端 metadata 保留和关闭清理，使用合成身份和假密钥，无外部请求，未改动日常配置，辅助进程已退出。该链路测试在宿主外运行插件，并等待时间戳回退及网关缓存刷新，不用于证明首请求的刷新时序。
+- issue #3 报告者的具体 `400 Invalid Claude request identity` 尚未复现，保持 issue 开放，等待其客户端和中转站版本及脱敏请求信息复测。
+
+### English
+
+- While investigating [issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3), found that the default Claude Code UA was newer than 2.1.78 while `metadata.user_id` still always used the legacy encoding. Effective `claude-cli/2.1.78` and newer UAs now use a JSON string containing `device_id`, `account_uuid`, and `session_id`; older versions keep the original concatenated string.
+- Encoding follows the resolved version pin, provider override, and custom UA. Switching versions preserves the same identity components. Injection continues through native `extraBody`.
+- Recognize both encodings as plugin-owned identities for cleanup on disable. Preserve client metadata, foreign identities, and identities with extra manual fields. Identity files containing only the modern encoding retain their device/account base on reload.
+- Corrected the documentation's claim that UA plus metadata is sufficient for every strict relay. System prompts and relay-specific identity checks can still reject a request; the caller's system prompt is preserved.
+- Validation: all 330 isolated regression assertions passed. An isolated real Magpie Messages path verified the default modern encoding, downgrade, upgrade, client metadata preservation, and cleanup on disable, using synthetic identities and a fake key with no external requests or live configuration changes. Helper processes exited. This transport test runs the plugin outside its native host and waits for the timestamp fallback and gateway caches; it does not establish first-request refresh timing.
+- The reporter's exact `400 Invalid Claude request identity` in issue #3 has not yet been reproduced. The issue remains open pending retesting with their client/relay versions and sanitized request details.
+
 ## 1.8.7 - 2026-11-12
 
 **修复 Pi 原生请求头切换与关闭后的缓存残留 / Fix native header switching for Pi and stale headers after disabling**

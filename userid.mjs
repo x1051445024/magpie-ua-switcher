@@ -25,6 +25,37 @@ export const USER_ID_RE = /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9
 export const BASE_ID_RE = /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}$/i
 const SESSION_TTL_MS = 4 * 3600 * 1000
 
+function identityParts(value) {
+  if (typeof value !== "string") return null
+  const legacy = /^user_([0-9a-f]{64})_account_([0-9a-f-]{36})_session_([0-9a-f-]{36})$/i.exec(value)
+  if (legacy) return { device_id: legacy[1], account_uuid: legacy[2], session_id: legacy[3] }
+  try {
+    const id = JSON.parse(value)
+    if (!id || typeof id !== "object" || Array.isArray(id)) return null
+    // Extra fields make this a manual identity, even when the base is ours.
+    if (Object.keys(id).length !== 3 || !/^[0-9a-f]{64}$/i.test(id.device_id ?? "")) return null
+    if (!/^[0-9a-f-]{36}$/i.test(id.account_uuid ?? "") || !/^[0-9a-f-]{36}$/i.test(id.session_id ?? "")) return null
+    if (![id.device_id, id.account_uuid, id.session_id].every((v) => typeof v === "string")) return null
+    return { device_id: id.device_id, account_uuid: id.account_uuid, session_id: id.session_id }
+  } catch { return null }
+}
+
+function baseOf(value) {
+  const id = identityParts(value)
+  return id ? `user_${id.device_id}_account_${id.account_uuid}` : ""
+}
+
+// Claude Code changed the wire encoding in 2.1.78. The outgoing UA includes
+// provider overrides and custom header aliases, so it decides the format.
+export function formatUserId(value, ua) {
+  const version = /^claude-cli\/(\d+)\.(\d+)\.(\d+)(?=[\s+-]|$)/i.exec(ua ?? "")
+  if (!version) return value
+  const [major, minor, patch] = version.slice(1).map(Number)
+  if (!(major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 78))))) return value
+  const id = identityParts(value)
+  return id ? JSON.stringify(id) : value
+}
+
 // Whether an extraBody `metadata` is exactly what this plugin writes.
 //
 // Ownership is decided by the value, not by the ledger's word, so that a
@@ -40,9 +71,7 @@ export function peekBaseId() {
   try {
     const j = JSON.parse(fs.readFileSync(useridPath(), "utf8"))
     if (typeof j?.base_id === "string" && BASE_ID_RE.test(j.base_id)) return j.base_id
-    if (typeof j?.user_id === "string" && USER_ID_RE.test(j.user_id)) {
-      return j.user_id.replace(/_session_[0-9a-f-]{36}$/i, "")
-    }
+    return baseOf(j?.user_id)
   } catch {}
   return ""
 }
@@ -52,9 +81,10 @@ export function isOurMetadata(md, opts = {}) {
   const keys = Object.keys(md)
   if (keys.length !== 1 || keys[0] !== "user_id") return false
   const value = md.user_id
-  if (typeof value !== "string" || !USER_ID_RE.test(value)) return false
+  const valueBase = baseOf(value)
+  if (!valueBase) return false
   const base = opts.baseId === undefined ? peekBaseId() : opts.baseId
-  if (base) return value.startsWith(`${base}_session_`)
+  if (base) return valueBase === base
   return Boolean(opts.recordedInLedger)
 }
 
@@ -100,9 +130,7 @@ export function userId() {
       const j = JSON.parse(fs.readFileSync(file, "utf8"))
       if (typeof j?.base_id === "string" && BASE_ID_RE.test(j.base_id)) {
         memoBaseId = j.base_id
-      } else if (typeof j?.user_id === "string" && USER_ID_RE.test(j.user_id)) {
-        memoBaseId = j.user_id.replace(/_session_[0-9a-f-]{36}$/i, "")
-      }
+      } else memoBaseId = baseOf(j?.user_id)
     } catch {}
     if (!memoBaseId) {
       memoBaseId = `user_${crypto.randomBytes(32).toString("hex")}_account_${crypto.randomUUID()}`

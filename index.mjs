@@ -36,7 +36,7 @@ import {
   versionsPath,
   zcodeMidPath,
 } from "./paths.mjs"
-import { CLAUDE_CODE_PROFILES, isOurMetadata, peekBaseId, resetUserIdMemo, userId } from "./userid.mjs"
+import { CLAUDE_CODE_PROFILES, formatUserId, isOurMetadata, peekBaseId, resetUserIdMemo, userId } from "./userid.mjs"
 
 let CONFIG_PATH = configPath()
 let PROVIDERS_PATH = providersPath()
@@ -807,7 +807,8 @@ function providersApply(cfg) {
       }
       if (!("metadata" in eb) || ours) {
         if (idForThisPass === null) idForThisPass = userId()
-        eb.metadata = { user_id: idForThisPass }
+        const ua = Object.entries(headers).find(([k]) => k.toLowerCase() === "user-agent")?.[1]
+        eb.metadata = { user_id: formatUserId(idForThisPass, ua) }
         wrote.push("metadata")
       } else {
         note(`${p.id}: its extraBody metadata is not what this plugin writes; left as set`, "warn")
@@ -1154,7 +1155,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.8.7",
+    version: "1.8.8",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,

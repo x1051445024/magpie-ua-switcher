@@ -11,7 +11,9 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 1. **原生 provider**（providers.json 里的 API-key 条目，如中转站，由 magpie 的 Go 侧直接发请求）：切换档案时，插件把解析出的头写进对应条目的 `headers` 字段。文件确实变化后，通过 Magpie 宿主现有的协议事件通知主进程清除供应商缓存，不改登录数据，也不重启宿主；切换响应会等待通知发送完成。切回 `off` 也会通知，头未变化时不通知。运行在无法识别的宿主外部时，回退到只更新 `plugins.json` 时间戳、保持内容不变的方式。模型级请求头以及 `passHeaders` 明确选中的客户端请求头可能优先。头名称按大小写不敏感匹配。切回 `off` 时，只在当前值仍与插件写入值一致的情况下恢复覆盖前的值；后续手工修改会保留。旧版只记录键名，无法恢复本次修复前已被覆盖的值。
 2. **插件宿主路径的 provider**（如 zcode-auth 声明的 zcode）：通过 `chat.headers` 钩子注入，优先级最高，逐请求生效。
 
-第三个字段：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）时，插件把真实 Claude Code 的 `metadata.user_id` 写进 **Messages 线路 provider 的 `extraBody`**，由 magpie 自己在请求发出前合进请求体。严格校验 Claude Code 身份的中转站要求「原始 UA + metadata.user_id 齐全」，只改头不改体会被拒或断流（上游常记为 499）；补上后即可通过。该 id 首次生成后持久化在配置同目录，跨请求稳定；请求体已带 `metadata` 时不覆盖，所以客户端自带的 `user_id` 不会被改，您手工设的 `extraBody` 也不会被插件认领。可在网页「Provider 设置」里关闭（配置项 `injectMetadata`）。
+第三个字段：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）时，插件把 Claude Code 的 `metadata.user_id` 写进 **Messages 线路 provider 的 `extraBody`**，由 magpie 自己在请求发出前合进请求体。从 1.8.8 起，编码跟随实际生效的 User-Agent：`claude-cli/2.1.78` 及以上使用含 `device_id`、`account_uuid`、`session_id` 的 JSON 字符串；旧版本保留 `user_..._account_..._session_...` 字符串。版本钉死和按 provider 覆盖切换格式时保留同一组身份字段。设备和账号基底持久化在配置同目录，会话 UUID 在宿主重启或四小时窗口后轮换。客户端自带的 metadata 和手工配置的身份会保留。可在网页「Provider 设置」里关闭注入（配置项 `injectMetadata`）。
+
+严格 Claude Code-only 中转站还可能校验系统提示词、请求结构，以及自身的会话或请求身份。仅补齐 UA 与 `metadata.user_id` 不能保证通过；插件保留调用方的系统提示词。[issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 中发现的版本与 metadata 编码不匹配已修复并测试，但报告者那条 `400 Invalid Claude request identity` 仍需结合其中转站和客户端版本复测。
 
 1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。详见 [CHANGELOG](CHANGELOG.md) 1.8.0。
 
@@ -138,7 +140,7 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 # 5. 验证完把 "selfcheck" 改回 false 并重载
 ```
 
-单元测试：`magpie-bun.exe selftest.mjs`（308 项断言：各档案 × 各协议、排除列表、按 provider 覆盖、版本钉、asar 版本读取、`/config` 校验、原生缓存通知与并发切换、背压下的 RPC 帧完整性、请求头恢复与旧版仅键名记账迁移、宿主重载后的稳定会话标识、providers.json 写入、extraBody 注入，以及「不得声明任何 gateway 钩子」的守卫）。
+单元测试：`magpie-bun.exe selftest.mjs`（330 项断言：各档案 × 各协议、排除列表、按 provider 覆盖、版本钉、asar 版本读取、`/config` 校验、原生缓存通知与并发切换、背压下的 RPC 帧完整性、请求头恢复与旧版仅键名记账迁移、宿主重载后的稳定会话标识、providers.json 写入、新旧 Claude 身份编码与归属识别、extraBody 注入，以及「不得声明任何 gateway 钩子」的守卫）。
 
 ## 已知局限
 

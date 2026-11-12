@@ -507,7 +507,9 @@ const writeProviders = (mutate) => {
   fs.writeFileSync(provPath, JSON.stringify(doc))
 }
 
-await postCfg({ excludeProviders: ["zcode"], providerOverrides: {}, injectMetadata: true })
+// Keep the existing legacy-format ownership cases on a pre-2.1.78 client.
+const versionsBeforeMetadata = cfgDoc().versions
+await postCfg({ excludeProviders: ["zcode"], providerOverrides: {}, injectMetadata: true, versions: { "claude-code": "2.1.77" } })
 await setProfile("claude-code")
 const USER_ID = /^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/
 eq("extraBody carries a Claude Code user_id", USER_ID.test(uidOf("p-anthropic")), true)
@@ -709,6 +711,79 @@ const ids = await import("./userid.mjs")
 eq("userid.mjs exports the identity", USER_ID.test(ids.userId()), true)
 eq("userid.mjs reuses the persisted base", ids.userId().replace(/_session_[0-9a-f-]{36}$/i, ""), uidPi.replace(/_session_[0-9a-f-]{36}$/i, ""))
 eq("Claude Code profiles", [...ids.CLAUDE_CODE_PROFILES].sort(), ["claude-code", "pi"])
+
+// Claude Code >= 2.1.78 uses JSON encoded inside the user_id string.
+const jsonIdOf = (id) => {
+  try { return JSON.parse(uidOf(id)) } catch { return null }
+}
+await setProfile("claude-code")
+const legacyIdentity = uidOf("p-anthropic")
+await postCfg({ versions: { "claude-code": "2.1.78" } })
+const modernIdentity = jsonIdOf("p-anthropic")
+eq("2.1.78 user_id stays a string", typeof metaOf("p-anthropic")?.user_id, "string")
+eq("2.1.78 uses the modern identity fields", Object.keys(modernIdentity ?? {}).sort(), ["account_uuid", "device_id", "session_id"])
+eq("format upgrade preserves device, account and session", modernIdentity ? `user_${modernIdentity.device_id}_account_${modernIdentity.account_uuid}_session_${modernIdentity.session_id}` : null, legacyIdentity)
+await setProfile("claude-code")
+eq("modern identity stays stable across re-apply", jsonIdOf("p-anthropic"), modernIdentity)
+await postCfg({ versions: { "claude-code": "2.1.77" } })
+eq("version downgrade restores the legacy encoding", uidOf("p-anthropic"), legacyIdentity)
+await postCfg({ versions: { "claude-code": "3.0.0" } })
+eq("a later major version keeps modern encoding", jsonIdOf("p-anthropic")?.session_id ?? null, modernIdentity?.session_id ?? "missing")
+await postCfg({ versions: { "claude-code": "" } })
+eq("the default Claude Code version uses modern encoding", jsonIdOf("p-anthropic")?.device_id ?? null, modernIdentity?.device_id ?? "missing")
+await setProfile("pi")
+eq("pi's older Anthropic version keeps legacy encoding", uidOf("p-anthropic"), legacyIdentity)
+await postCfg({ versions: { pi: "2.1.78" } })
+eq("a modern pi pin selects modern encoding", jsonIdOf("p-anthropic"), modernIdentity)
+await postCfg({ versions: { pi: "" } })
+await setProfile("claude-code")
+await postCfg({ providerOverrides: { "p-anthropic": "pi" } })
+eq("provider override selects its own legacy encoding", uidOf("p-anthropic"), legacyIdentity)
+await postCfg({ providerOverrides: {} })
+eq("clearing the override restores modern encoding", jsonIdOf("p-anthropic"), modernIdentity)
+
+// The effective, case-insensitive UA wins over the global version pin.
+await postCfg({ profiles: { "claude-code": { ua: "claude-cli/2.1.78", headers: { any: { "user-agent": "claude-cli/2.1.77" } } } } })
+await setProfile("claude-code")
+eq("a custom UA alias selects its actual legacy format", uidOf("p-anthropic"), legacyIdentity)
+await postCfg({ profiles: { "claude-code": { ua: "claude-cli/2.1.78" } } })
+eq("a custom modern UA selects JSON format", jsonIdOf("p-anthropic"), modernIdentity)
+await postCfg({ profiles: {} })
+await setProfile("off")
+eq("off removes modern plugin metadata", metaOf("p-anthropic"), null)
+
+const ownModern = modernIdentity ?? { device_id: "0".repeat(64), account_uuid: "0".repeat(36), session_id: "0".repeat(36) }
+const manualModern = { user_id: JSON.stringify({ ...ownModern, tenant: "manual" }) }
+writeProviders((ps) => { ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: manualModern } })
+await setProfile("claude-code")
+eq("manual JSON identity extensions are not overwritten", metaOf("p-anthropic"), manualModern)
+await setProfile("off")
+eq("manual JSON identity extensions survive off", metaOf("p-anthropic"), manualModern)
+const foreignModern = { user_id: JSON.stringify({ ...ownModern, device_id: "f".repeat(64) }) }
+writeProviders((ps) => { ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: foreignModern } })
+await setProfile("claude-code")
+await setProfile("off")
+eq("a foreign modern identity stays user-owned", metaOf("p-anthropic"), foreignModern)
+writeProviders((ps) => { ps.find((p) => p.id === "p-anthropic").extraBody = { metadata: { user_id: JSON.stringify(ownModern) } } })
+const modernWithoutLedger = cfgDoc()
+delete modernWithoutLedger.appliedMeta
+fs.writeFileSync(cfgPath, JSON.stringify(modernWithoutLedger))
+await setProfile("off")
+eq("modern owned metadata is removed even without its ledger", metaOf("p-anthropic"), null)
+await postCfg({ versions: versionsBeforeMetadata })
+
+const persistedIdentityBeforeMigration = fs.readFileSync(uidPath, "utf8")
+try {
+  fs.writeFileSync(uidPath, JSON.stringify({ user_id: JSON.stringify(ownModern) }))
+  ids.resetUserIdMemo()
+  eq("modern persisted identity exposes the same base", ids.peekBaseId(), `user_${ownModern.device_id}_account_${ownModern.account_uuid}`)
+  eq("modern-only identity file keeps the base on reload", ids.userId().replace(/_session_[0-9a-f-]{36}$/i, ""), `user_${ownModern.device_id}_account_${ownModern.account_uuid}`)
+} finally {
+  fs.writeFileSync(uidPath, persistedIdentityBeforeMigration)
+  ids.resetUserIdMemo()
+}
+eq("unknown UA does not invent a modern client version", ids.formatUserId(legacyIdentity, "custom/3.0.0"), legacyIdentity)
+eq("an incomplete Claude version keeps legacy encoding", ids.formatUserId(legacyIdentity, "claude-cli/2.1"), legacyIdentity)
 
 // --- gateway middleware (schema.middleware.mjs): top-level union cleanup ---
 const { onRequest: schemaHook } = await import("./schema.middleware.mjs")
