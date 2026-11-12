@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.8.7 - 2026-11-12
+
+**修复 Pi 原生请求头切换与关闭后的缓存残留 / Fix native header switching for Pi and stale headers after disabling**
+
+### 中文
+
+- 修复原生 API-key provider 的头配置已经写入 `providers.json`，但运行中的 Magpie 仍用旧请求头的问题。实际变更后通过宿主现有事件协议通知缓存失效，开启和关闭覆盖都生效；重复设置相同值不发送多余通知。
+- Magpie 会把插件的 `process.stdout.write` 重定向到日志；缓存事件改为通过同一 stdout 流队列写入完整帧，避免背压下穿插正在发送的大 RPC 消息。HTTP 切换响应等待写入完成与事件调度，同一时段的重复切换和无改动配置提交也等待尚未完成的通知。无需 gateway 钩子，也不修改登录信息或重启宿主。
+- 请求头名称按大小写不敏感合并，避免重复 UA / originator。记录插件写入值与原始值，关闭时恢复原值，并保留后续手工修改。升级旧版仅记录键名的配置时，先撤回已认领的旧插件头，避免关闭后重新恢复它们；旧版已覆盖且未保存的原值仍无法找回。
+- Codex / opencode 会话标识持久化，宿主重载不再生成另一组请求头或触发反复刷新。修复继承属性被当成档案或 provider 覆盖的问题，并拒绝 UA 中的控制字符。
+- 更新双语文档：说明 `modelHeaders` / `passHeaders` 的优先级例外、内部恢复记账和非宿主运行时的时间戳通知回退。
+- 验证：308 项隔离回归断言通过，包括大 RPC 帧分段发送时的通知完整性；真实 Magpie 上开启后的首条 Pi 请求使用所选头并返回 `200 OK`，关闭后的首条恢复 Pi 原头并得到严格客户端校验的预期 `401`；不加载兼容扩展的完整 Pi CLI 返回 `OK`。测试临时配置均已还原。
+
+### English
+
+- Fixed native API-key providers retaining old request headers in the running Magpie process after `providers.json` had been updated. Actual changes now notify the host's existing cache invalidation protocol, including when disabling an override; unchanged headers send no redundant event.
+- Magpie redirects plugin `process.stdout.write` to its log stream, so the event now uses a complete frame through the same stdout stream queue, preserving large RPC messages under backpressure. HTTP switches wait for the write to complete and for event dispatch; repeated switches and unchanged configuration submissions also wait for a pending notification. This requires no gateway hook, sign-in change, or host restart.
+- Merge header names case-insensitively to avoid duplicate UA / originator entries. Track written and original values so disabling restores originals while preserving later manual edits. Upgrades from key-only ledgers remove previously claimed plugin headers before capturing originals, preventing those headers from being restored on disable. Original values overwritten and never saved by older versions cannot be recovered.
+- Persist Codex / opencode session identifiers across host reloads to avoid header churn and repeated refreshes. Reject inherited properties as profile/provider overrides and reject control characters in User-Agent values.
+- Updated both READMEs with `modelHeaders` / `passHeaders` precedence exceptions, restoration bookkeeping, and the timestamp notification fallback outside the native host.
+- Validation: all 308 isolated regression assertions passed, including notification framing while large RPC messages are sent in segments. On a running Magpie instance, the first Pi request after enabling used the selected headers and returned `200 OK`; the first request after disabling restored Pi's original headers and received the expected `401` from strict client validation. A complete Pi CLI run returned `OK` without loading the compatibility extension. Temporary test configuration was restored.
+
 ## 1.8.6 — 2026-11-09
 
 **补齐 Codex 引擎指纹头，解决 codex_cli_only 上游 403 / Complete Codex engine fingerprint headers to satisfy codex_cli_only upstreams**

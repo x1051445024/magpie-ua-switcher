@@ -8,7 +8,7 @@ English docs: [README.md](README.md)。
 
 magpie 有两条上游请求路径，本插件各覆盖一条：
 
-1. **原生 provider**（providers.json 里的 API-key 条目，如中转站，由 magpie 的 Go 侧直接发请求）：切换档案时，插件把解析出的头写进 providers.json 对应条目的 `headers` 字段——该字段在 magpie 里**永远优先**于默认 UA，且 providers.json 热加载。只动插件自己写入的键（记录在配置文件 `applied` 字段），你手工设置的其他 headers 不受影响；切回 `off` 时恰好移除这些键。
+1. **原生 provider**（providers.json 里的 API-key 条目，如中转站，由 magpie 的 Go 侧直接发请求）：切换档案时，插件把解析出的头写进对应条目的 `headers` 字段。文件确实变化后，通过 Magpie 宿主现有的协议事件通知主进程清除供应商缓存，不改登录数据，也不重启宿主；切换响应会等待通知发送完成。切回 `off` 也会通知，头未变化时不通知。运行在无法识别的宿主外部时，回退到只更新 `plugins.json` 时间戳、保持内容不变的方式。模型级请求头以及 `passHeaders` 明确选中的客户端请求头可能优先。头名称按大小写不敏感匹配。切回 `off` 时，只在当前值仍与插件写入值一致的情况下恢复覆盖前的值；后续手工修改会保留。旧版只记录键名，无法恢复本次修复前已被覆盖的值。
 2. **插件宿主路径的 provider**（如 zcode-auth 声明的 zcode）：通过 `chat.headers` 钩子注入，优先级最高，逐请求生效。
 
 第三个字段：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）时，插件把真实 Claude Code 的 `metadata.user_id` 写进 **Messages 线路 provider 的 `extraBody`**，由 magpie 自己在请求发出前合进请求体。严格校验 Claude Code 身份的中转站要求「原始 UA + metadata.user_id 齐全」，只改头不改体会被拒或断流（上游常记为 499）；补上后即可通过。该 id 首次生成后持久化在配置同目录，跨请求稳定；请求体已带 `metadata` 时不覆盖，所以客户端自带的 `user_id` 不会被改，您手工设的 `extraBody` 也不会被插件认领。可在网页「Provider 设置」里关闭（配置项 `injectMetadata`）。
@@ -78,7 +78,7 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 | `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`；anthropic 协议另带 `anthropic-version`、`anthropic-beta: claude-code-20250219,…`、`X-Stainless-*` 全套 |
 | `pi` | anthropic 端点 `claude-cli/2.1.75`；responses 端点 `pi (win32 10.0.19045; x64)` | 与真实 pi 客户端行为一致，按请求的 SDK 包自动选形态 |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`、`X-ZCode-*`、`X-Device-Mid`（读本机真实设备 id）等 |
-| `opencode` | `Bun/1.4.4`（真实客户端不设自定义 UA，运行时即 Bun） | `HTTP-Referer: https://opencode.ai/`、`X-Title/X-Source: opencode`、会话三件套 `x-opencode-session-id`/`X-Session-Id`/`x-session-affinity`（`ses_<64hex>`，进程内固定） |
+| `opencode` | `Bun/1.4.4`（真实客户端不设自定义 UA，运行时即 Bun） | `HTTP-Referer: https://opencode.ai/`、`X-Title/X-Source: opencode`、会话三件套 `x-opencode-session-id`/`X-Session-Id`/`x-session-affinity`（`ses_<64hex>`，持久化以跨宿主重载保持稳定） |
 | `antigravity` | `antigravity/hub/2.26.0 (aidev_client; os_type=windows; arch=amd64)` | 无（真实 Antigravity Hub 只发 UA）；已知构建号才带 `; cl=…` |
 | `off` | 不改写 | 恢复 magpie 默认行为 |
 
@@ -110,7 +110,8 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `versions`：手动钉版本，如 `{"codex": "0.170.0"}`，优先级最高。
 - `injectMetadata`：默认 true。为 Claude Code 身份档案的 Messages provider 写 `metadata.user_id`（providers.json 的 `extraBody`）；关掉即把插件写过的那份撤掉，不碰其它。
 - `profiles`：自定义档案，合并覆盖同名内置。单形态 `{ "label", "ua", "headers": {"any","anthropic","openai"} }`；双形态 `forms: { anthropic, openai, default }`。
-- `applied` / `appliedMeta`：插件内部记账（分别在 providers.json 里写过的 header 键与 extraBody 字段），勿手工编辑。
+- `applied` / `appliedHeaders` / `appliedMeta`：插件内部记账（providers.json 的 header 键名、写入值和覆盖前的值，以及 extraBody 字段），勿手工编辑，也勿在保留新版 provider 请求头时回写旧版记账数据。
+- `sessionIds`：内部 Codex 和 opencode 会话标识，持久化后宿主重载不会重新生成请求头并触发反复重载。
 
 ### 文件位置
 
@@ -137,7 +138,7 @@ curl -X POST http://127.0.0.1:3425/v1/messages -H "Authorization: Bearer magpie"
 # 5. 验证完把 "selfcheck" 改回 false 并重载
 ```
 
-单元测试：`magpie-bun.exe selftest.mjs`（189 项断言：各档案 × 各协议、排除列表、按 provider 覆盖、版本钉、asar 版本读取、`/config` 校验、providers.json 写入与回滚、user_id 所寄的 extraBody 写入与撤回，以及「不得声明任何 gateway 钩子」的守卫）。
+单元测试：`magpie-bun.exe selftest.mjs`（308 项断言：各档案 × 各协议、排除列表、按 provider 覆盖、版本钉、asar 版本读取、`/config` 校验、原生缓存通知与并发切换、背压下的 RPC 帧完整性、请求头恢复与旧版仅键名记账迁移、宿主重载后的稳定会话标识、providers.json 写入、extraBody 注入，以及「不得声明任何 gateway 钩子」的守卫）。
 
 ## 已知局限
 

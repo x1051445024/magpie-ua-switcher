@@ -8,7 +8,7 @@ Switch the **User-Agent (and companion identity headers) that [magpie](https://g
 
 magpie has two upstream paths, and this plugin covers both:
 
-1. **Native providers** (API-key entries in `providers.json`, e.g. relay stations — fetched by magpie's Go side): on every switch the plugin writes the resolved headers into each provider's `headers` field, which magpie always honors and hot-reloads. Only keys the plugin itself wrote are ever touched (tracked in the config's `applied` field), so headers you set by hand survive; switching to `off` removes exactly those keys.
+1. **Native providers** (API-key entries in `providers.json`, e.g. relay stations — fetched by magpie's Go side): on every switch the plugin writes the resolved headers into each provider's `headers` field. After an actual file change, it sends the Magpie host's existing cache invalidation event through the host protocol, without modifying sign-ins or restarting the host. The switch response waits for the notification to flush. This also applies to `off`; unchanged headers send no notification. When running outside the recognized Magpie host, it falls back to updating the `plugins.json` timestamp without changing its contents. Model-specific headers and client headers explicitly selected by `passHeaders` can take precedence. Header names are matched case-insensitively. Switching to `off` restores overwritten values while the current value still matches what the plugin wrote; later manual edits are preserved. Older key-only bookkeeping cannot recover values overwritten before this repair.
 2. **Plugin-host providers** (declared by plugins such as `opencode-zcode-auth`): rewritten per request through the `chat.headers` hook, which wins over every other header source.
 
 A third field completes the picture: while the effective profile is `claude-code` (or pi's anthropic form), the plugin writes Claude Code's `metadata.user_id` into each **Messages-wire provider's `extraBody`** in `providers.json`, and magpie merges it into the body itself as the request goes out. Relays that demand the complete Claude Code identity (original UA plus `metadata.user_id`) otherwise refuse or cut the stream — the upstream often logs that as 499. The id is generated once, persisted beside the config, and stable across requests; a body that already carries `metadata` keeps it, so a client-sent `user_id` is never overwritten, and an `extraBody` you set by hand is never claimed. Turn it off in the web UI's Provider settings (`injectMetadata`).
@@ -81,7 +81,7 @@ The OS segment of codex/pi/antigravity UAs is generated from the machine the plu
 | `claude-code` | `claude-cli/2.1.310 (external, cli)` | `X-App: cli`; on anthropic also `anthropic-version`, `anthropic-beta: claude-code-20250219,…`, full `X-Stainless-*` set |
 | `pi` | anthropic endpoints: `claude-cli/2.1.75`; responses endpoints: `pi (win32 10.0.19045; x64)` | exactly what the real pi client sends, picked per protocol |
 | `zcode` | `ZCode/3.16.3 ai-sdk/anthropic/3.0.81` | `HTTP-Referer`, `X-ZCode-*`, `X-Device-Mid` (read from the local device id when present) |
-| `opencode` | `Bun/1.4.4` (the real client sends no custom UA — the Bun runtime default rides along) | `HTTP-Referer: https://opencode.ai/`, `X-Title`/`X-Source: opencode`, session trio `x-opencode-session-id`/`X-Session-Id`/`x-session-affinity` (`ses_<64hex>`, fixed per plugin process) |
+| `opencode` | `Bun/1.4.4` (the real client sends no custom UA — the Bun runtime default rides along) | `HTTP-Referer: https://opencode.ai/`, `X-Title`/`X-Source: opencode`, session trio `x-opencode-session-id`/`X-Session-Id`/`x-session-affinity` (`ses_<64hex>`, persisted across host reloads) |
 | `antigravity` | `antigravity/hub/2.26.0 (aidev_client; os_type=windows; arch=amd64)` | none (the real Hub sends only its UA); `; cl=…` only for known builds |
 | `off` | no rewrite | magpie's default behavior |
 
@@ -113,7 +113,8 @@ The OS segment of codex/pi/antigravity UAs is generated from the machine the plu
 - `versions` — hand pins, e.g. `{"codex": "0.170.0"}`; always beats a fetched value.
 - `injectMetadata` — default true. Write Claude Code's `metadata.user_id` as `extraBody` on the Messages providers of a Claude Code profile; off removes what the plugin wrote and touches nothing else.
 - `profiles` — custom profiles, merged over the built-ins. Single form: `{ "label", "ua", "headers": { "any": {}, "anthropic": {}, "openai": {} } }`; per-protocol forms: `forms: { anthropic, openai, default }`.
-- `applied` / `appliedMeta` — internal bookkeeping of the header keys and the `extraBody` fields the plugin wrote into `providers.json`; don't edit by hand.
+- `applied` / `appliedHeaders` / `appliedMeta` — internal bookkeeping of header keys, written values and their originals, and `extraBody` fields in `providers.json`; don't edit by hand or restore an older ledger while keeping newer provider headers.
+- `sessionIds` — internal Codex and opencode session identifiers, persisted so host reloads do not regenerate headers and trigger repeated reloads.
 
 ### Where the files are
 
@@ -145,7 +146,7 @@ cat /path/to/magpie-ua-switcher/ua-echo-last.json
 # 5. set "selfcheck" back to false and reload
 ```
 
-Unit tests: `magpie-bun.exe selftest.mjs` (189 assertions: every profile × protocol, exclusions, overrides, version pins, the asar version reader, the /config endpoint's validation, providers.json write and rollback, the extraBody the user_id rides, and the guard that no gateway hook is declared at all).
+Unit tests: `magpie-bun.exe selftest.mjs` (308 assertions: every profile × protocol, exclusions, overrides, version pins, the asar version reader, /config validation, native cache notifications and concurrent switches, RPC framing under backpressure, header restoration and key-only ledger upgrades, stable session IDs across host reloads, providers.json writes, extraBody injection, and the guard against gateway hooks).
 
 ## Known limits
 

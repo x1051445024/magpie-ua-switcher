@@ -3,9 +3,14 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { spawnSync } from "node:child_process"
 
-const cfgPath = path.join(os.tmpdir(), `ua-switcher-selftest-${process.pid}.json`)
-const provPath = path.join(os.tmpdir(), `ua-switcher-prov-${process.pid}.json`)
+const taskTestRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ua-switcher-selftest-"))
+const cfgPath = path.join(taskTestRoot, "ua-switcher.json")
+const provPath = path.join(taskTestRoot, "providers.json")
+const pluginListPath = path.join(taskTestRoot, "plugins.json")
+const pluginListContents = JSON.stringify({ plugins: [] })
+fs.writeFileSync(pluginListPath, pluginListContents)
 process.env.UA_SWITCHER_CONFIG = cfgPath
 process.env.UA_SWITCHER_PROVIDERS = provPath
 fs.writeFileSync(cfgPath, JSON.stringify({ profile: "off", port: 0, autoVersions: false }))
@@ -65,6 +70,12 @@ eq("codex session-id shape", UUID_RE.test(h["session-id"] ?? ""), true)
 eq("codex anthropic has no OpenAI-Beta", "OpenAI-Beta" in h, false)
 h = await apply("any", "@ai-sdk/openai-responses")
 eq("codex openai OpenAI-Beta", h["OpenAI-Beta"], "responses=experimental")
+const mixedHookHeaders = { headers: { "user-agent": "old/1", ORIGINATOR: "old", "X-Keep": "mine" } }
+await chatHeaders(msg("any", "@ai-sdk/openai"), mixedHookHeaders)
+eq("hook has one UA regardless of case", Object.keys(mixedHookHeaders.headers).filter((k) => k.toLowerCase() === "user-agent"), ["User-Agent"])
+eq("hook has one originator regardless of case", Object.keys(mixedHookHeaders.headers).filter((k) => k.toLowerCase() === "originator"), ["originator"])
+eq("hook preserves unrelated header", mixedHookHeaders.headers["X-Keep"], "mine")
+eq("prototype-named provider uses the global profile", String((await apply("constructor", "@ai-sdk/openai"))["User-Agent"]).startsWith("codex_cli_rs/"), true)
 
 // claude-code
 await fetch(base + "/set/claude-code", { method: "POST" })
@@ -119,8 +130,10 @@ eq("versions endpoint inUse", vs.values.codex.inUse, "9.9.9")
 eq("versions endpoint source", vs.values.codex.source, "pinned")
 eq("versions endpoint npm mapping", vs.values.codex.npm, "@openai/codex")
 eq("versions endpoint zcode has no npm", vs.values.zcode.npm, null)
-delete cfgV.versions
-fs.writeFileSync(cfgPath, JSON.stringify(cfgV))
+// Keep the current ownership ledger when changing a user setting.
+const cfgUnpinned = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+delete cfgUnpinned.versions
+fs.writeFileSync(cfgPath, JSON.stringify(cfgUnpinned))
 h = await apply("any", "@ai-sdk/anthropic")
 eq("unpinned falls back to builtin", String(h["User-Agent"]).startsWith("codex_cli_rs/0.164.0 ("), true)
 vs = await (await fetch(base + "/versions")).json()
@@ -138,7 +151,14 @@ eq("logs flow through client.app.log", logs.length > 0, true)
 
 // native providers (providers.json headers) — codex
 if (process.platform !== "win32") fs.chmodSync(provPath, 0o600)
+await fetch(base + "/set/off", { method: "POST" })
+const beforeNativeSwitch = fs.statSync(pluginListPath).mtimeMs
 await fetch(base + "/set/codex", { method: "POST" })
+eq("native header changes notify Magpie", fs.statSync(pluginListPath).mtimeMs > beforeNativeSwitch, true)
+eq("notification preserves plugin list contents", fs.readFileSync(pluginListPath, "utf8"), pluginListContents)
+const afterNativeSwitch = fs.statSync(pluginListPath).mtimeMs
+await fetch(base + "/set/codex", { method: "POST" })
+eq("unchanged native headers do not reload plugins", fs.statSync(pluginListPath).mtimeMs, afterNativeSwitch)
 let ps = Object.fromEntries(prov().map((p) => [p.id, p]))
 if (process.platform !== "win32") eq("native rewrite keeps providers.json 0600", (fs.statSync(provPath).mode & 0o777).toString(8), "600")
 eq("native rewrite leaves no temp file", fs.existsSync(provPath + ".ua-switcher.tmp"), false)
@@ -152,13 +172,174 @@ eq("native anthropic UA", ps["p-anthropic"].headers["User-Agent"].startsWith("co
 eq("excluded native provider untouched", "headers" in ps["zcode"], false)
 eq("applied map persisted", Object.keys(JSON.parse(fs.readFileSync(cfgPath, "utf8")).applied ?? {}).sort(), ["p-anthropic", "p-responses"])
 
+const beforeHostReload = fs.readFileSync(provPath, "utf8")
+const beforeHostReloadStamp = fs.statSync(pluginListPath).mtimeMs
+const reloadHost = () => spawnSync(process.execPath, ["--eval", `const { UASwitcherPlugin } = await import(${JSON.stringify(new URL("./index.mjs", import.meta.url).href)}); await UASwitcherPlugin({}, {}); process.exit(0)`], { encoding: "utf8", timeout: 10000 })
+const reloadedHost = reloadHost()
+eq("fresh plugin host starts successfully", reloadedHost.status, 0)
+eq("host reload keeps native session headers stable", fs.readFileSync(provPath, "utf8"), beforeHostReload)
+eq("host reload does not notify another reload", fs.statSync(pluginListPath).mtimeMs, beforeHostReloadStamp)
+await fetch(base + "/set/opencode", { method: "POST" })
+const beforeOpencodeReload = fs.readFileSync(provPath, "utf8")
+const beforeOpencodeReloadStamp = fs.statSync(pluginListPath).mtimeMs
+eq("fresh opencode host starts successfully", reloadHost().status, 0)
+eq("opencode host reload keeps session headers stable", fs.readFileSync(provPath, "utf8"), beforeOpencodeReload)
+eq("opencode host reload does not notify another reload", fs.statSync(pluginListPath).mtimeMs, beforeOpencodeReloadStamp)
+await fetch(base + "/set/codex", { method: "POST" })
+
+const fakeHostDir = path.join(taskTestRoot, "plugin-host")
+fs.mkdirSync(fakeHostDir)
+const fakeHostFile = path.join(fakeHostDir, "host-0123456789ab.js")
+fs.writeFileSync(fakeHostFile, `
+delete process.env.MAGPIE_ADDR;
+process.stdout.write = process.stderr.write.bind(process.stderr);
+const { UASwitcherPlugin } = await import(${JSON.stringify(new URL("./index.mjs", import.meta.url).href)});
+await UASwitcherPlugin({}, {});
+const hostBase = "http://127.0.0.1:" + globalThis.__uaSwitcherServer.port;
+const realTimeout = globalThis.setTimeout;
+let releaseNotification;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === 25) {
+    releaseNotification = () => callback(...args);
+    return realTimeout(() => {}, 0);
+  }
+  return realTimeout(callback, delay, ...args);
+};
+const firstSwitch = fetch(hostBase + "/set/off", { method: "POST" });
+for (let attempt = 0; !releaseNotification && attempt < 100; attempt++) {
+  await new Promise(resolve => realTimeout(resolve, 5));
+}
+if (!releaseNotification) process.exit(2);
+let repeatedSwitchFinished = false;
+let unchangedConfigFinished = false;
+const repeatedSwitch = fetch(hostBase + "/set/off", { method: "POST" }).then(() => { repeatedSwitchFinished = true; });
+const unchangedConfig = fetch(hostBase + "/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then(() => { unchangedConfigFinished = true; });
+await new Promise(resolve => realTimeout(resolve, 50));
+console.error("pending-identical-switch=" + !repeatedSwitchFinished);
+console.error("pending-unchanged-config=" + !unchangedConfigFinished);
+releaseNotification();
+await Promise.all([firstSwitch, repeatedSwitch, unchangedConfig]);
+process.exit(0);
+`)
+const beforeNativeEventStamp = fs.statSync(pluginListPath).mtimeMs
+const nativeEventHost = spawnSync(process.execPath, [fakeHostFile], { encoding: "utf8", timeout: 10000 })
+eq("native host exits successfully after configuration change", nativeEventHost.status, 0)
+eq("native host emits its cache invalidation event", nativeEventHost.stdout.trim(), JSON.stringify({ event: "auth" }))
+eq("native event does not restart the plugin host", fs.statSync(pluginListPath).mtimeMs, beforeNativeEventStamp)
+eq("identical switch waits for pending notification", nativeEventHost.stderr.includes("pending-identical-switch=true"), true)
+eq("unchanged config waits for pending notification", nativeEventHost.stderr.includes("pending-unchanged-config=true"), true)
+await fetch(base + "/set/codex", { method: "POST" })
+
+// A large RPC line can have bytes pending when a switch sends its notification.
+fs.writeFileSync(fakeHostFile, `
+import fs from "node:fs";
+import { Writable } from "node:stream";
+const { UASwitcherPlugin } = await import(${JSON.stringify(new URL("./index.mjs", import.meta.url).href)});
+await UASwitcherPlugin({}, {});
+process.stdout._write = (data, encoding, callback) => {
+  const bytes = Buffer.from(data);
+  fs.writeSync(1, bytes.subarray(0, 4096));
+  setTimeout(() => { fs.writeSync(1, bytes.subarray(4096)); callback(); }, 50);
+};
+const rpcWrite = Writable.prototype.write.bind(process.stdout);
+process.stdout.write = process.stderr.write.bind(process.stderr);
+const writes = [1, 2].map(id => new Promise((resolve, reject) => {
+  rpcWrite(JSON.stringify({ id, event: "chunk", data: "A".repeat(87384) }) + String.fromCharCode(10), error => error ? reject(error) : resolve());
+}));
+await Promise.all([...writes, fetch("http://127.0.0.1:" + globalThis.__uaSwitcherServer.port + "/set/off", { method: "POST" })]);
+process.exit(0);
+`)
+const fragmentedHost = spawnSync(process.execPath, [fakeHostFile], { encoding: "utf8", timeout: 10000 })
+let fragmentedFrames = []
+let fragmentParseError = false
+try { fragmentedFrames = fragmentedHost.stdout.trim().split("\n").map(line => JSON.parse(line)) } catch { fragmentParseError = true }
+eq("fragmented RPC host completes the switch", fragmentedHost.status, 0)
+eq("cache notification does not split a pending RPC frame", fragmentParseError, false)
+eq("pending RPC chunk frames are retained", fragmentedFrames.filter(frame => frame.event === "chunk").length, 2)
+eq("pending RPC payload bytes are retained", fragmentedFrames.filter(frame => frame.event === "chunk").every(frame => frame.data === "A".repeat(87384)), true)
+eq("fragmented RPC stream contains the notification", fragmentedFrames.filter(frame => frame.event === "auth"), [{ event: "auth" }])
+await fetch(base + "/set/codex", { method: "POST" })
+
 // native providers — back to off removes exactly our keys
+const beforeNativeOff = fs.statSync(pluginListPath).mtimeMs
 await fetch(base + "/set/off", { method: "POST" })
+eq("off notifies Magpie to stop using cached headers", fs.statSync(pluginListPath).mtimeMs > beforeNativeOff, true)
 ps = Object.fromEntries(prov().map((p) => [p.id, p]))
 eq("off removes our UA", "User-Agent" in (ps["p-responses"].headers ?? {}), false)
 eq("off keeps user's header", ps["p-responses"].headers["X-Keep"], "mine")
 eq("off drops empty headers field", "headers" in ps["p-anthropic"], false)
 eq("applied map cleared", Object.keys(JSON.parse(fs.readFileSync(cfgPath, "utf8")).applied ?? {}), [])
+
+// Same-name headers are restored, and a user's later edits are not deleted.
+const originalHeaderProviders = JSON.parse(fs.readFileSync(provPath, "utf8"))
+const userHeaderProviders = structuredClone(originalHeaderProviders)
+userHeaderProviders.providers[0].headers = { "X-Keep": "mine", "user-agent": "my-client/1", ORIGINATOR: "my-client" }
+fs.writeFileSync(provPath, JSON.stringify(userHeaderProviders))
+await fetch(base + "/set/codex", { method: "POST" })
+ps = Object.fromEntries(prov().map((p) => [p.id, p]))
+eq("native has one UA regardless of case", Object.keys(ps["p-responses"].headers).filter((k) => k.toLowerCase() === "user-agent"), ["User-Agent"])
+eq("native has one originator regardless of case", Object.keys(ps["p-responses"].headers).filter((k) => k.toLowerCase() === "originator"), ["originator"])
+await fetch(base + "/set/pi", { method: "POST" })
+await fetch(base + "/set/off", { method: "POST" })
+eq("off restores headers from before the first profile", prov()[0].headers, userHeaderProviders.providers[0].headers)
+await fetch(base + "/set/codex", { method: "POST" })
+const userEditedHeaders = JSON.parse(fs.readFileSync(provPath, "utf8"))
+userEditedHeaders.providers[0].headers["User-Agent"] = "manually-edited/2"
+fs.writeFileSync(provPath, JSON.stringify(userEditedHeaders))
+await fetch(base + "/set/off", { method: "POST" })
+eq("off preserves a later user edit to managed UA", prov()[0].headers["User-Agent"], "manually-edited/2")
+eq("off does not reintroduce an old case alias over a user edit", "user-agent" in prov()[0].headers, false)
+for (const nextProfile of ["off", "pi"]) {
+  await fetch(base + "/set/codex", { method: "POST" })
+  const userAddedAlias = JSON.parse(fs.readFileSync(provPath, "utf8"))
+  userAddedAlias.providers[0].headers["user-agent"] = "manual-alias/3"
+  fs.writeFileSync(provPath, JSON.stringify(userAddedAlias))
+  await fetch(base + "/set/" + nextProfile, { method: "POST" })
+  await fetch(base + "/set/off", { method: "POST" })
+  eq(`off removes owned UA beside a manual alias after ${nextProfile}`, prov()[0].headers, { "X-Keep": "mine", "user-agent": "manual-alias/3", ORIGINATOR: "my-client" })
+}
+fs.writeFileSync(provPath, JSON.stringify(originalHeaderProviders))
+
+const prototypeHeaderProviders = structuredClone(originalHeaderProviders)
+prototypeHeaderProviders.providers.push({ id: "__proto__", baseAPI: "responses", responses: "http://x/v1", headers: { "user-agent": "original/1" } })
+fs.writeFileSync(provPath, JSON.stringify(prototypeHeaderProviders))
+await fetch(base + "/set/codex", { method: "POST" })
+await fetch(base + "/set/pi", { method: "POST" })
+await fetch(base + "/set/off", { method: "POST" })
+eq("prototype-named provider restores original headers", prov().find((p) => p.id === "__proto__").headers, { "user-agent": "original/1" })
+eq("prototype-named provider clears ownership ledger", Object.keys(JSON.parse(fs.readFileSync(cfgPath, "utf8")).appliedHeaders ?? {}), [])
+fs.writeFileSync(provPath, JSON.stringify(originalHeaderProviders))
+
+// Upgrade an active key-only ledger without treating old plugin values as originals.
+await fetch(base + "/set/codex", { method: "POST" })
+const legacyHeaderProviders = JSON.parse(fs.readFileSync(provPath, "utf8"))
+legacyHeaderProviders.providers[0].headers["user-agent"] = "legacy-original/1"
+const legacyCfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+delete legacyCfg.appliedHeaders
+for (const profile of ["codex", "pi", "off"]) {
+  fs.writeFileSync(provPath, JSON.stringify(legacyHeaderProviders))
+  fs.writeFileSync(cfgPath, JSON.stringify({ ...legacyCfg, profile }))
+  eq(`legacy ${profile} migration starts successfully`, reloadHost().status, 0)
+  await fetch(base + "/set/off", { method: "POST" })
+  eq(`legacy ${profile} migration removes old plugin headers on off`, prov()[0].headers, { "X-Keep": "mine", "user-agent": "legacy-original/1" })
+  eq(`legacy ${profile} migration removes headers without originals`, "headers" in prov()[1], false)
+  eq(`legacy ${profile} migration clears ownership`, Object.keys(JSON.parse(fs.readFileSync(cfgPath, "utf8")).appliedHeaders ?? {}), [])
+}
+fs.writeFileSync(provPath, JSON.stringify(originalHeaderProviders))
+
+// A custom profile may name the same header in any and protocol groups.
+const aliasCfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+aliasCfg.profiles["case-aliases"] = {
+  ua: "base/1",
+  headers: { any: { "user-agent": "custom/2", ORIGINATOR: "any" }, openai: { originator: "openai" } },
+}
+fs.writeFileSync(cfgPath, JSON.stringify(aliasCfg))
+await fetch(base + "/set/case-aliases", { method: "POST" })
+eq("native custom UA has one case alias", Object.keys(prov()[0].headers).filter((k) => k.toLowerCase() === "user-agent"), ["user-agent"])
+eq("native custom originator has one case alias", Object.keys(prov()[0].headers).filter((k) => k.toLowerCase() === "originator"), ["originator"])
+eq("native custom protocol header wins", prov()[0].headers.originator, "openai")
+await fetch(base + "/set/off", { method: "POST" })
+eq("native custom aliases leave no plugin headers on off", prov()[0].headers, originalHeaderProviders.providers[0].headers)
 
 // external rewrite of providers.json is self-healed by chatHeaders
 await fetch(base + "/set/codex", { method: "POST" })
@@ -201,6 +382,16 @@ eq("protected header Authorization rejected", (await postCfg({ profiles: { badau
 eq("reserved profile id rejected", (await postCfg({ profiles: { off: { ua: "x/1" } } })).status, 400)
 eq("override unknown profile rejected", (await postCfg({ providerOverrides: { newapi: "nope" } })).status, 400)
 eq("bad excludes rejected", (await postCfg({ excludeProviders: ["x", 5] })).status, 400)
+for (const name of ["constructor", "toString", "__proto__"]) {
+  eq(`inherited profile ${name} rejected by set`, (await fetch(base + `/set/${name}`, { method: "POST" })).status, 400)
+  eq(`inherited profile ${name} rejected by override`, (await postCfg({ providerOverrides: { newapi: name } })).status, 400)
+}
+eq("non-string override profile rejected", (await postCfg({ providerOverrides: { newapi: ["codex"] } })).status, 400)
+for (const ctl of ["\r", "\n", "\0"]) {
+  eq(`scalar UA rejects control ${ctl.charCodeAt(0)}`, (await postCfg({ profiles: { badua: { ua: `client/1${ctl}evil` } } })).status, 400)
+  eq(`dual UA rejects control ${ctl.charCodeAt(0)}`, (await postCfg({ profiles: { badua: { forms: { openai: { ua: `client/1${ctl}evil` } } } } })).status, 400)
+}
+await fetch(base + "/set/off", { method: "POST" })
 
 const csrfPost = await fetch(base + "/set/codex", {
   method: "POST",

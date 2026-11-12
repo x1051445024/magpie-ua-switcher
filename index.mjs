@@ -25,6 +25,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomBytes, randomUUID } from "node:crypto"
+import { Writable } from "node:stream"
 import {
   adoptLegacy,
   besideConfig,
@@ -48,6 +49,7 @@ let providersUiCache = { mtime: -1, list: null, error: null } // read-only once 
 let zcodeMidCache = { checkedAt: 0, mid: "" }
 let lastAppliedMtime = -1
 let lastProvidersMtime = -1
+let providerNotification = Promise.resolve()
 
 function refreshPaths() {
   const nextCfg = configPath()
@@ -99,8 +101,8 @@ const REGISTRIES = ["https://registry.npmjs.org", "https://registry.npmmirror.co
 // the switcher does the same instead of naming one fixed machine. codex is
 // Rust and names arches the Rust way (x64 → x86_64).
 // opencode sends no User-Agent of its own (the Bun runtime's default rides
-// along); its identity is the session header trio below. One id per plugin
-// process ≈ one long-lived session — generating per request would look wrong.
+// along); its identity is the session header trio below. Persist the ids across
+// host reloads so cache notification does not trigger another header rewrite.
 function newOpencodeSessionId() {
   try {
     return `ses_${randomBytes(32).toString("hex")}`
@@ -163,7 +165,7 @@ function getZcodeDeviceMid() {
 
 // Header sets matching the real clients. Built per call from the effective
 // versions, so a background version refresh changes the UA without a reload.
-function builtinProfiles(V) {
+function builtinProfiles(V, sessionIds = {}) {
   const profiles = {
     codex: {
       label: "Codex CLI",
@@ -171,8 +173,8 @@ function builtinProfiles(V) {
       headers: {
         any: {
           originator: "codex_cli_rs",
-          "x-codex-window-id": CODEX_SESSION_ID,
-          "session-id": CODEX_SESSION_ID,
+          "x-codex-window-id": sessionIds.codex ?? CODEX_SESSION_ID,
+          "session-id": sessionIds.codex ?? CODEX_SESSION_ID,
         },
         openai: { "OpenAI-Beta": "responses=experimental" },
       },
@@ -235,9 +237,9 @@ function builtinProfiles(V) {
           "HTTP-Referer": "https://opencode.ai/",
           "X-Title": "opencode",
           "X-Source": "opencode",
-          "x-opencode-session-id": OPENCODE_SESSION_ID,
-          "X-Session-Id": OPENCODE_SESSION_ID,
-          "x-session-affinity": OPENCODE_SESSION_ID,
+          "x-opencode-session-id": sessionIds.opencode ?? OPENCODE_SESSION_ID,
+          "X-Session-Id": sessionIds.opencode ?? OPENCODE_SESSION_ID,
+          "x-session-affinity": sessionIds.opencode ?? OPENCODE_SESSION_ID,
         },
       },
     },
@@ -281,7 +283,9 @@ const DEFAULTS = {
   versions: {},
   selfcheck: false,
   applied: {},
+  appliedHeaders: {},
   appliedMeta: {},
+  sessionIds: {},
   autoVersions: true,
   updateEveryHours: 24,
   registry: null, // extra npm registry tried first, e.g. https://registry.npmmirror.com
@@ -342,8 +346,13 @@ function normalize(raw) {
   c.profile = typeof c.profile === "string" ? c.profile : "off"
   c.selfcheck = c.selfcheck === true
   c.applied = c.applied && typeof c.applied === "object" && !Array.isArray(c.applied) ? c.applied : {}
+  c.appliedHeaders = c.appliedHeaders && typeof c.appliedHeaders === "object" && !Array.isArray(c.appliedHeaders) ? c.appliedHeaders : {}
   c.appliedMeta =
     c.appliedMeta && typeof c.appliedMeta === "object" && !Array.isArray(c.appliedMeta) ? c.appliedMeta : {}
+  const sessionIds = c.sessionIds ?? {}
+  c.sessionIds = {}
+  if (typeof sessionIds.codex === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionIds.codex)) c.sessionIds.codex = sessionIds.codex
+  if (typeof sessionIds.opencode === "string" && /^ses_[0-9a-f]{64}$/.test(sessionIds.opencode)) c.sessionIds.opencode = sessionIds.opencode
   c.versions =
     c.versions && typeof c.versions === "object" && !Array.isArray(c.versions)
       ? Object.fromEntries(Object.entries(c.versions).filter(([, v]) => typeof v === "string"))
@@ -575,13 +584,24 @@ function versionState(cfg) {
 // ---- profile resolution ---------------------------------------------------------
 
 function effectiveProfiles(cfg) {
-  const out = { ...builtinProfiles(versionsOf(cfg)) }
+  const out = Object.assign(Object.create(null), builtinProfiles(versionsOf(cfg), cfg.sessionIds))
   for (const [id, p] of Object.entries(cfg.profiles ?? {})) {
     if (!p || typeof p !== "object") continue
     const ok = typeof p.ua === "string" || (p.forms && typeof p.forms === "object")
     if (ok) out[id] = p
   }
   return out
+}
+
+function wantedProfile(cfg, providerID) {
+  return Object.hasOwn(cfg.providerOverrides, providerID) ? cfg.providerOverrides[providerID] : cfg.profile
+}
+
+function putHeader(headers, name, value) {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name.toLowerCase()) delete headers[key]
+  }
+  headers[name] = value
 }
 
 function formHeaders(h, protocol) {
@@ -712,8 +732,9 @@ function providersApply(cfg) {
   }
   if (!json || !Array.isArray(json.providers)) return
   const profiles = effectiveProfiles(cfg)
-  const applied = { ...(cfg.applied ?? {}) }
-  const appliedMeta = { ...(cfg.appliedMeta ?? {}) }
+  const applied = Object.assign(Object.create(null), cfg.applied)
+  const appliedHeaders = Object.assign(Object.create(null), cfg.appliedHeaders)
+  const appliedMeta = Object.assign(Object.create(null), cfg.appliedMeta)
   let idForThisPass = null // userId() reads and may write a file: once a pass
   let baseForThisPass = null // peekBaseId() reads it the same way
   let changed = false
@@ -721,18 +742,38 @@ function providersApply(cfg) {
   for (const p of json.providers) {
     if (!p || typeof p !== "object" || typeof p.id !== "string") continue
     const name =
-      cfg.excludeProviders.includes(p.id) ? "off" : cfg.providerOverrides[p.id] || cfg.profile
+      cfg.excludeProviders.includes(p.id) ? "off" : wantedProfile(cfg, p.id)
     const headers = {}
     if (name && name !== "off") {
       const form = resolveForm(profiles[name], wireOf(p))
       if (form && form.ua) {
-        headers["User-Agent"] = form.ua
-        for (const [k, v] of Object.entries(form.headers || {})) headers[k] = String(v)
+        putHeader(headers, "User-Agent", form.ua)
+        for (const [k, v] of Object.entries(form.headers || {})) putHeader(headers, k, String(v))
       }
     }
     const merged = { ...(p.headers ?? {}) }
-    for (const k of applied[p.id] ?? []) if (!(k in headers)) delete merged[k]
-    for (const [k, v] of Object.entries(headers)) merged[k] = v
+    const previous = Object.hasOwn(appliedHeaders, p.id) ? appliedHeaders[p.id] : {}
+    for (const [name, record] of Object.entries(previous ?? {})) {
+      const aliases = Object.keys(merged).filter((k) => k.toLowerCase() === name.toLowerCase())
+      // Remove owned aliases; a later manual alias wins over the saved original.
+      const owned = aliases.filter((k) => merged[k] === record.value)
+      if (owned.length) {
+        for (const k of owned) delete merged[k]
+        if (owned.length === aliases.length) Object.assign(merged, record.before)
+      }
+    }
+    // Legacy keys are already ours, so never capture their values as originals.
+    // Untracked aliases remain available to the new restoration ledger.
+    const legacy = Object.hasOwn(applied, p.id) && Array.isArray(applied[p.id]) ? applied[p.id] : []
+    if (!Object.hasOwn(appliedHeaders, p.id)) {
+      for (const k of legacy) delete merged[k]
+    }
+    const written = {}
+    for (const [k, v] of Object.entries(headers)) {
+      const before = Object.fromEntries(Object.entries(merged).filter(([n]) => n.toLowerCase() === k.toLowerCase()))
+      putHeader(merged, k, v)
+      written[k] = { value: v, before }
+    }
     const before = JSON.stringify(p.headers ?? {})
     if (Object.keys(merged).length) p.headers = merged
     else delete p.headers
@@ -740,6 +781,8 @@ function providersApply(cfg) {
     const keys = Object.keys(headers)
     if (keys.length) applied[p.id] = keys
     else delete applied[p.id]
+    if (keys.length) appliedHeaders[p.id] = written
+    else delete appliedHeaders[p.id]
 
     // Claude Code's metadata.user_id, as the provider's extraBody: magpie
     // merges those into the body as it goes out (internal/provider/
@@ -806,12 +849,52 @@ function providersApply(cfg) {
   }
   const ledgersChanged =
     JSON.stringify(applied) !== JSON.stringify(cfg.applied ?? {}) ||
+    JSON.stringify(appliedHeaders) !== JSON.stringify(cfg.appliedHeaders ?? {}) ||
     JSON.stringify(appliedMeta) !== JSON.stringify(cfg.appliedMeta ?? {})
-  if (ledgersChanged) saveCfg({ applied, appliedMeta })
+  if (ledgersChanged) saveCfg({ applied, appliedHeaders, appliedMeta })
   try {
     lastAppliedMtime = cache.mtime
     lastProvidersMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
   } catch {}
+  if (changed) notifyProvidersChanged()
+  return changed
+}
+
+function notifyProvidersChanged() {
+  // The Magpie host's existing auth event invalidates provider/catalog caches
+  // without modifying sign-ins or retiring the process serving this request.
+  if (/[\\/]plugin-host[\\/]host-[0-9a-f]{12}\.js$/i.test(process.argv[1] ?? "")) {
+    try {
+      // Bypass the redirected method while retaining the stdout stream's queue,
+      // so this frame cannot split an RPC line waiting for its remaining bytes.
+      providerNotification = new Promise((resolve, reject) => {
+        Writable.prototype.write.call(process.stdout, JSON.stringify({ event: "auth" }) + "\n", (error) => {
+          if (error) reject(error)
+          else resolve()
+        })
+      }).then(() => new Promise((resolve) => setTimeout(resolve, 25))).catch((error) => {
+        note(`cannot notify Magpie of provider changes: ${error.message}`, "warn")
+        notifyProviderListChanged()
+      })
+      return
+    } catch (e) {
+      note(`cannot notify Magpie of provider changes: ${e.message}`, "warn")
+    }
+  }
+  notifyProviderListChanged()
+}
+
+function notifyProviderListChanged() {
+  // Magpie invalidates its provider cache when the plugin-list stamp changes.
+  const listPath = path.join(path.dirname(PROVIDERS_PATH), "plugins.json")
+  try {
+    const stat = fs.statSync(listPath)
+    if (!stat.isFile()) return
+    const stamp = new Date(Math.max(Date.now(), Math.ceil(stat.mtimeMs) + 1))
+    fs.utimesSync(listPath, stat.atime, stamp)
+  } catch (e) {
+    if (e?.code !== "ENOENT") note(`cannot notify Magpie of provider changes: ${e?.message ?? e}`, "warn")
+  }
 }
 
 // ---- logging ------------------------------------------------------------------
@@ -871,7 +954,7 @@ async function chatHeaders(msg, out) {
     }
     const providerID = String(msg?.message?.model?.providerID ?? msg?.provider?.info?.id ?? "")
     if (providerID && cfg.excludeProviders.includes(providerID)) return
-    const wanted = cfg.providerOverrides[providerID] || cfg.profile
+    const wanted = wantedProfile(cfg, providerID)
     if (!wanted || wanted === "off") {
       if (cfg.log === "always") note(`${providerID || "?"}: off (magpie default UA)`, "info", false)
       return
@@ -884,8 +967,8 @@ async function chatHeaders(msg, out) {
     const protocol = protocolOf(msg)
     const form = resolveForm(profile, protocol)
     if (!form || !form.ua) return
-    out.headers["User-Agent"] = form.ua
-    for (const [k, v] of Object.entries(form.headers || {})) out.headers[k] = String(v)
+    putHeader(out.headers, "User-Agent", form.ua)
+    for (const [k, v] of Object.entries(form.headers || {})) putHeader(out.headers, k, String(v))
     if (cfg.log !== "off") {
       const tag = `${providerID || "?"} ← ${wanted} [${protocol}]`
       if (cfg.log === "always" || seen.get(providerID) !== tag) {
@@ -933,8 +1016,8 @@ function cleanOverrides(v, profiles) {
   const out = {}
   for (const [id, prof] of Object.entries(v)) {
     if (!ID_RE.test(id)) throw new Error(`无效的 provider id：${id}`)
-    if (prof !== "off" && !profiles[prof]) throw new Error(`providerOverrides.${id} 引用了不存在的档案：${prof}`)
-    out[id] = prof
+    if (typeof prof !== "string" || (prof !== "off" && !Object.hasOwn(profiles, prof))) throw new Error(`providerOverrides.${id} 引用了不存在的档案：${prof}`)
+    Object.defineProperty(out, id, { value: prof, enumerable: true, configurable: true, writable: true })
   }
   return out
 }
@@ -969,7 +1052,7 @@ function cleanProfileForm(f, where) {
   if (!f || typeof f !== "object") throw new Error(`${where} 必须是对象`)
   const out = {}
   if (f.ua != null) {
-    if (typeof f.ua !== "string" || !f.ua.length || f.ua.length > 512) throw new Error(`${where}.ua 必须是 1–512 字符`)
+    if (typeof f.ua !== "string" || !f.ua.length || f.ua.length > 512 || CTL_RE.test(f.ua)) throw new Error(`${where}.ua 必须是 1–512 字符且不含控制字符`)
     out.ua = f.ua
   }
   if (f.headers) {
@@ -998,7 +1081,7 @@ function cleanProfiles(v) {
       }
       one.forms = forms
     } else {
-      if (typeof p.ua !== "string" || !p.ua.length || p.ua.length > 512) throw new Error(`档案 ${id} 的 ua 必须是 1–512 字符`)
+      if (typeof p.ua !== "string" || !p.ua.length || p.ua.length > 512 || CTL_RE.test(p.ua)) throw new Error(`档案 ${id} 的 ua 必须是 1–512 字符且不含控制字符`)
       one.ua = p.ua
       if (p.headers) {
         const g = {}
@@ -1071,7 +1154,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.8.5",
+    version: "1.8.7",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
@@ -1212,17 +1295,19 @@ async function handle(req) {
     const cfg = saveCfg(patch)
     try {
       providersApply(cfg)
+      await providerNotification
     } catch {}
     return json({ ok: true, state: state() })
   }
   const m = url.pathname.match(/^\/set\/([A-Za-z0-9._-]+)$/)
   if (m && (req.method === "GET" || req.method === "POST")) {
     const name = m[1]
-    const ok = name === "off" || !!effectiveProfiles(loadCfg())[name]
+    const ok = name === "off" || Object.hasOwn(effectiveProfiles(loadCfg()), name)
     if (!ok) return json({ ok: false, error: `unknown profile: ${name}` }, 400)
     const cfg = saveCfg({ profile: name })
     try {
       providersApply(cfg)
+      await providerNotification
     } catch {}
     return json({ ok: true, profile: cfg.profile })
   }
@@ -1311,6 +1396,11 @@ export async function UASwitcherPlugin(input) {
       fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
       const seed = typeof opts.profile === "string" ? opts.profile : "off"
       safeWriteJsonSync(CONFIG_PATH, normalize({ profile: seed }))
+    }
+    const cfg = loadCfg()
+    if (!cfg.sessionIds?.codex || !cfg.sessionIds?.opencode) {
+      JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) // Preserve an unreadable config rather than overwrite it.
+      saveCfg({ sessionIds: { codex: cfg.sessionIds?.codex ?? CODEX_SESSION_ID, opencode: cfg.sessionIds?.opencode ?? OPENCODE_SESSION_ID } })
     }
   } catch (e) {
     note(`cannot write config: ${e?.message ?? e}`, "error")
