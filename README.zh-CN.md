@@ -21,7 +21,9 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 
 需要将该供应商的代理，或它继承的 Magpie 全局代理，明确设为**直连**。自定义代理、继承系统代理、单账号代理、自定义 TLS 和强制 HTTP/1 暂不支持；网页会显示原因并保留原上游地址。转发开启时插件监听器必须保持运行；停用或卸载插件前，先关闭 billing，让插件恢复其认领的原地址，后续手工改动会保留。此功能增加一次本机转发和请求体解析，单请求上限 64 MiB。1 MiB 的本机测量有波动：部分测试增加约 4–15 ms，也有低于基线的结果，不代表生产环境的固定延迟。
 
-严格中转站仍可能有额外的提示词、会话和请求校验。[issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 的 billing 要求已在隔离的真实 Magpie / Pi 测试中覆盖，仍待报告者在其实际中转站复测确认。
+从 **1.9.1** 起，该兼容路径也处理 `This model does not support assistant message prefill`：仅当上游明确返回对应的 **400**，且最后一条是纯文本 assistant 消息时，保留原历史并追加一条 user `Continue.`，重试一次。成功请求不改历史，其它错误按原样返回；待执行的工具调用不重试。流式和非流式均支持，系统提示词、缓存标记、metadata 和 billing block 保持一致。被拒绝的请求会多一次上游往返。
+
+严格中转站仍可能验证其它系统提示词、会话或请求特征。[issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 的报告者已确认 1.9.0 模型测试及 Pi 初始请求正常；新增 prefill 修复通过了隔离真实 Magpie 测试，实际中转站的长会话仍待复测。
 
 1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。详见 [CHANGELOG](CHANGELOG.md) 1.8.0。
 
@@ -52,7 +54,9 @@ magpie plugin add ./magpie-ua-switcher                  # 或本地路径
 
 ## 切换方式（网页可编辑一切）
 
-**网页开关** <http://127.0.0.1:3426>：点卡片切换档案之外，还能直接编辑以下内容（保存即热生效，写入同一个配置文件）：
+**Magpie 内置页（1.9.1）**：更新插件后，在 Magpie 侧栏打开 **身份伪装 / UA Switcher**。Docker 用户通过已有的 Magpie 网页即可加载和保存，使用 Magpie 的服务代理，无需额外映射 3426 端口或为控制页另开隧道。内置页与独立网页使用同一份配置，沿用全局档案、单供应商覆盖与排除规则。连接失败会显示断开并禁用尚未加载的编辑项；点击刷新可重新连接。
+
+**独立网页** <http://127.0.0.1:3426> 继续可用。托管插件的监听端口跟随 Magpie 插件选项 `port`，未指定时为 3426；需要自定义端口时，在 `plugins.json` 对应插件的 `options` 中设置 `{"port":12345}`。旧 `ua-switcher.json` 的端口会与内置页的服务端口同步。点卡片切换档案之外，两种入口都能编辑以下内容（保存即热生效，写入同一个配置文件）：
 
 - **版本钉死**：每个客户端版本一个输入框，留空跟随自动更新，填入版本号即钉死
 - **排除列表**：chip 式增删不改写的 provider
@@ -113,7 +117,7 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `profile`：全局当前档案（网页/curl 改的就是它）。
 - `excludeProviders`：不改写的 provider 列表。默认排除 `zcode`——Z.ai 上游要求 ZCode 客户端身份（免费 Start Plan 非此身份返回 405）。
 - `providerOverrides`：按 provider 覆盖，如 `{"newapi": "codex"}`。
-- `port`：网页开关监听端口（改后需重载插件）。
+- `port`：网页监听端口。托管插件从 Magpie 插件 `options.port` 同步，未指定时为 3426；改插件选项后需重载。独立运行时使用本字段。
 - `log`：`change` | `always` | `off`。
 - `selfcheck`：自检模式，见下。
 - `autoVersions` / `updateEveryHours` / `registry`：npm 版本自动更新的开关、查询间隔（小时）、额外的首选 registry。

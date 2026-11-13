@@ -807,6 +807,9 @@
     let routeBusy = 0;
     let routeRenderForced = false;
     const $ = (s) => document.querySelector(s);
+    const embeddedPage = /\/_ua_ui\/[0-9a-f]{48}\/$/.test(location.pathname);
+    const api = (resource, init) => fetch(new URL(resource.replace(/^\/+/, ""), new URL("./", location.href)), init);
+    const connectionControls = [];
 
     const esc = (s) =>
       String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -960,16 +963,18 @@
       }
       try {
         if (window.location.protocol === "file:") throw new Error("file protocol preview");
-        const r = await fetch("/state");
+        const r = await api("/state");
+        if (r.status === 404 && embeddedPage) { location.replace(new URL("../../?embedded=1", location.href)); return; }
         if (!r.ok) throw new Error("HTTP " + r.status);
         S = await r.json();
+        for (const control of connectionControls.splice(0)) control.disabled = false;
         isOfflinePreview = false;
         $("#conn-dot").className = "pill-dot";
         $("#conn-label").textContent = "网关已连通";
         render();
         if (!silent) addLocalLog("已同步网关状态 (当前活动档案: " + S.profile + ")", "info");
       } catch (e) {
-        if (!S) {
+        if (!S && window.location.protocol === "file:") {
           S = JSON.parse(JSON.stringify(MOCK_STATE));
           isOfflinePreview = true;
           $("#conn-dot").className = "pill-dot off";
@@ -979,7 +984,10 @@
         } else {
           $("#conn-dot").className = "pill-dot off";
           $("#conn-label").textContent = "连接断开";
-          if (!silent) toast("无法连接至 switcher 服务", true);
+          if (!S) document.querySelectorAll("input, select, textarea, button").forEach(el => {
+            if (el.id !== "btn-refresh" && !el.disabled) { connectionControls.push(el); el.disabled = true; }
+          });
+          if (!silent) toast("无法连接至 switcher 服务，请重新连接", true);
         }
       }
     }
@@ -1091,7 +1099,7 @@
             return;
           }
           try {
-            const r = await fetch("/set/" + encodeURIComponent(v), { method: "POST" });
+            const r = await api("/set/" + encodeURIComponent(v), { method: "POST" });
             if (!r.ok) throw new Error();
             toast("全局预设已切换为：" + v);
             load(true);
@@ -1198,7 +1206,7 @@
       routeBusy++;
       updateRouteHint();
       try {
-        const r = await fetch("/config", {
+        const r = await api("/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
@@ -1508,7 +1516,7 @@
     // Event Bindings
     $("#prov-filter").oninput = () => renderProviderTable();
 
-    $("#btn-refresh").onclick = () => load(false);
+    $("#btn-refresh").onclick = () => embeddedPage && !S ? location.reload() : load(false);
 
     $("#btn-copy-path").onclick = async () => {
       try {
@@ -1522,7 +1530,7 @@
     $("#sw-metadata").onchange = async (e) => {
       const val = e.target.checked;
       try {
-        const r = await fetch("/config", {
+        const r = await api("/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ injectMetadata: val })
@@ -1540,7 +1548,7 @@
       const val = e.target.checked;
       if (isOfflinePreview) { S.claudeBilling = val; render(); return; }
       try {
-        const r = await fetch("/config", {
+        const r = await api("/config", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ claudeBilling: val })
         });
@@ -1612,7 +1620,7 @@
         if (i.value.trim()) pins[i.dataset.key] = i.value.trim();
       });
       try {
-        const r = await fetch("/config", {
+        const r = await api("/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ versions: pins })
@@ -1630,7 +1638,7 @@
     $("#fetch-ver").onclick = async () => {
       try {
         toast("正在从 npm 镜像同步最新版本...");
-        const r = await fetch("/fetch-versions", { method: "POST" });
+        const r = await api("/fetch-versions", { method: "POST" });
         const res = await r.json();
         if (res.ok) {
           toast("客户端版本已从 npm 同步更新");
@@ -1667,7 +1675,7 @@
           profiles[id] = obj;
         });
 
-        const r = await fetch("/config", {
+        const r = await api("/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ profiles })
@@ -1683,7 +1691,8 @@
     };
 
     // Font Size & Theme Controls
-    let fsVal = Number(localStorage.getItem("ua-switcher-font") || 13);
+    let fsVal = 13;
+    try { fsVal = Number(localStorage.getItem("ua-switcher-font") || 13); } catch {}
     const setFs = (v) => {
       fsVal = Math.min(18, Math.max(11, v));
       document.documentElement.style.setProperty("--fs", fsVal + "px");

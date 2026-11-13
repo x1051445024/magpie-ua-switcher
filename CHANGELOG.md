@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.9.1 - 2026-11-13
+
+**修复 assistant prefill 拒绝，新增 Magpie 内置控制页 / Handle assistant prefill refusals and embed the control page in Magpie**
+
+### 中文
+
+- 已开启的 Claude billing 兼容转发，在上游明确返回不支持 assistant prefill 的 400 时，仅对末尾纯文本 assistant 消息追加 user `Continue.` 并重试一次。保留历史、提示词、缓存、metadata 和 billing block；正常成功请求、其它错误及待执行工具调用保持原行为。支持流式和非流式，被拒绝的请求增加一次上游往返。
+- 新增 Magpie 侧栏的 **身份伪装 / UA Switcher** 内置页，Docker 用户使用已有 Magpie 网页及服务代理即可访问，无需控制页的独立端口映射或隧道。两种页面共享全局档案、供应商覆盖、排除及 billing 配置。
+- 入口脚本遵循 Magpie CSP，支持不透明来源的沙箱页面；独立页仍拒绝嵌入及跨来源 API 请求。服务连接失败不再加载演示数据冒充成功，支持刷新重连。
+- 监听端口与 Magpie 注册的服务端口一致，支持插件 `port` 选项，修复旧端口配置不一致；临时 CLI 宿主不接管主监听器或改写转发地址。
+- 验证：445 项检查通过（330 原有断言、38 billing、18 网络、37 prefill、22 内置页）；真实 Magpie / Pi CLI 隔离链路共 50 个合成请求通过。真实 Magpie 网页与隔离 Chromium 验证了内置页保存、全局 / 覆盖 / 排除、重新打开、自定义端口及连接故障恢复。未改日常配置或访问报告者中转站，issue #3 保持开放等待长会话复测。
+
+### English
+
+- The enabled Claude billing transport retries once only after an explicit upstream 400 refusing assistant prefill, appending a user `Continue.` to a final text-only assistant message. Preserve history, prompts, caches, metadata and the billing block. Successful requests, unrelated errors and pending tool calls retain their behavior. Support streaming and non-streaming; a refused request adds one upstream round trip.
+- Added an **身份伪装 / UA Switcher** page to Magpie's sidebar. Docker users access it through their existing Magpie web service proxy without a separate control-page port mapping or tunnel. Both page entry points share global profiles, provider overrides, exclusions and billing config.
+- Use a CSP-compatible entry script and support Magpie's opaque sandbox. The standalone page still rejects embedding and cross-origin API access. Connection failures no longer load demo data as if connected; Refresh reconnects.
+- Align the listener with Magpie's registered service port and plugin `port` option, including upgrades from a mismatched config port. Temporary CLI hosts do not take over the primary listener or retarget native transport URLs.
+- Validation: all 445 checks passed (330 existing, 38 billing, 18 network, 37 prefill, 22 page); 50 synthetic requests through isolated real Magpie / Pi CLI passed. Actual Magpie web and isolated Chromium covered embedded saves, global/override/exclusion changes, reopening, custom ports and API outage recovery. No live config changes or reporter-relay access; issue #3 stays open pending longer-conversation retesting.
+
 ## 1.9.0 - 2026-11-13
 
 **补齐 Claude Code billing block，覆盖原生模型测试 / Add Claude Code billing blocks, including native model tests**

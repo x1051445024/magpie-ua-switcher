@@ -1210,7 +1210,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.9.0",
+    version: "1.9.1",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
@@ -1259,6 +1259,7 @@ const UI_HTML_PATH = path.join(
   "ui.html"
 )
 let uiHtmlCache = { mtime: -1, html: "" }
+let uiCapability = randomBytes(24).toString("hex")
 
 function page() {
   try {
@@ -1303,16 +1304,52 @@ async function handle(req) {
     if (host !== "127.0.0.1" && host !== "localhost") return json({ error: "invalid transport host" }, 403)
     return billingTransport.handle(req)
   }
+  const host = (req.headers.get("host") || "").split(":")[0].toLowerCase()
+  const origin = req.headers.get("origin")
+  const embeddedOrigin = (host === "127.0.0.1" || host === "localhost") && (!origin || origin === "null")
+  const uiRoute = /^\/_ua_ui\/([0-9a-f]{48})\/(.*)$/.exec(url.pathname)
+  const cors = response => {
+    const headers = new Headers(response.headers)
+    headers.set("cache-control", "no-store")
+    headers.set("referrer-policy", "no-referrer")
+    if (origin === "null") {
+      headers.set("access-control-allow-origin", "null")
+      headers.set("access-control-allow-methods", "GET, POST, OPTIONS")
+      headers.set("access-control-allow-headers", "content-type")
+      headers.set("vary", "Origin")
+    }
+    return new Response(response.body, { status: response.status, headers })
+  }
+  if (url.pathname === "/" && url.searchParams.get("embedded") === "1" && req.method === "GET") {
+    if (!embeddedOrigin) return json({ error: "invalid embedded origin" }, 403)
+    // Navigation only. No CORS on bootstrap: an arbitrary opaque-origin
+    // script cannot fetch the control capability from a public URL.
+    return new Response(null, { status: 302, headers: { location: `/_ua_ui/${uiCapability}/`, "cache-control": "no-store", "referrer-policy": "no-referrer" } })
+  }
+  if (uiRoute) {
+    if (!embeddedOrigin) return json({ error: "invalid embedded origin" }, 403)
+    if (uiRoute[1] !== uiCapability) {
+      if (req.method === "GET" && uiRoute[2] === "") return new Response(null, { status: 302, headers: { location: "../../?embedded=1", "cache-control": "no-store" } })
+      return cors(json({ error: "expired embedded page; reopen the page" }, 404))
+    }
+    if (req.method === "OPTIONS") return cors(new Response(null, { status: 204 }))
+    url.pathname = "/" + uiRoute[2]
+    return cors(await handleUI(req, url, true))
+  }
   if (!isSameOriginRequest(req, url)) {
     return json({ ok: false, error: "forbidden cross-origin or invalid host request" }, 403)
   }
+  return handleUI(req, url, false)
+}
+
+async function handleUI(req, url, embedded) {
   if (url.pathname === "/" && req.method === "GET") {
     return new Response(page(), {
       headers: {
         "content-type": "text/html; charset=utf-8",
-        "X-Frame-Options": "DENY",
+        ...(embedded ? { "referrer-policy": "no-referrer" } : { "X-Frame-Options": "DENY" }),
         "Content-Security-Policy":
-          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" + (embedded ? "" : "; frame-ancestors 'none'"),
       },
     })
   }
@@ -1436,6 +1473,7 @@ function startServer() {
     if (globalThis.__uaSwitcherServer) globalThis.__uaSwitcherServer.stop(true)
   } catch {}
   server = null
+  uiCapability = randomBytes(24).toString("hex")
   bindAttempt(true)
   billingWatch = setInterval(() => {
     if (!server || typeof server !== "object") return
@@ -1448,6 +1486,24 @@ function startServer() {
     if (cache.mtime !== lastAppliedMtime || mtime !== lastProvidersMtime || settingsStamp !== lastBillingSettingsStamp) providersApply(cfg)
   }, 1000)
   billingWatch.unref?.()
+}
+
+function persistedPagePort() {
+  try {
+    const entries = JSON.parse(fs.readFileSync(path.join(path.dirname(PROVIDERS_PATH), "plugins.json"), "utf8")).plugins
+    if (!Array.isArray(entries)) return null
+    const pluginDir = fs.realpathSync(path.dirname(UI_HTML_PATH))
+    for (const entry of entries) {
+      if (entry?.off || typeof entry?.spec !== "string") continue
+      let own = /^(?:magpie-ua-switcher(?:@[^/]+)?|github:x1051445024\/magpie-ua-switcher(?:#.*)?|(?:git\+)?https:\/\/github\.com\/x1051445024\/magpie-ua-switcher(?:\.git)?(?:#.*)?)$/.test(entry.spec)
+      if (!own) {
+        try { own = fs.realpathSync(entry.spec) === pluginDir || fs.realpathSync(entry.spec) === fs.realpathSync(path.join(pluginDir, "index.mjs")) } catch {}
+      }
+      const port = entry.options?.port
+      if (own) return Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_PORT
+    }
+  } catch {}
+  return null
 }
 
 // ---- entry ------------------------------------------------------------------------
@@ -1489,6 +1545,8 @@ export async function UASwitcherPlugin(input) {
     note(`cannot write config: ${e?.message ?? e}`, "error")
   }
   try {
+    const port = persistedPagePort()
+    if (port !== null && port !== loadCfg().port) saveCfg({ port })
     lastAppliedMtime = cache.mtime
     providersApply(loadCfg())
   } catch {}
@@ -1496,7 +1554,10 @@ export async function UASwitcherPlugin(input) {
   // gone and the middleware cannot read files, so the switch now lives in the
   // plugin's options; say so once instead of letting the old setting go quiet.
   warnLegacyDiagnose(loadCfg())
-  startServer()
+  // Non-page CLI hosts receive a random service port from Magpie. They must
+  // neither take over the canonical listener nor retarget native providers.
+  if (Number.isInteger(opts.port) && opts.port > 0 && opts.port !== loadCfg().port) server = "auxiliary"
+  else startServer()
   fetchLatestVersions().catch(() => {}) // stale-cache check; rewrites on change
   const hooks = { "chat.headers": chatHeaders }
   // self-check mode: declare a provider whose upstream is the local echo

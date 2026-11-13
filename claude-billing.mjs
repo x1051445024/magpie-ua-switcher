@@ -48,6 +48,57 @@ function withoutHopHeaders(input) {
   return h
 }
 
+function userLast(raw, ua) {
+  if (!/^claude-cli\/\d+\.\d+\.\d+(?=[\s+-]|$)/i.test(ua ?? "")) return null
+  let body
+  try { body = JSON.parse(raw) } catch { return null }
+  if (!/^claude(?:-|$)/i.test(body?.model ?? "") || !Array.isArray(body.messages)) return null
+  const last = body.messages.at(-1)
+  if (last?.role !== "assistant") return null
+  const content = last.content
+  if (!(typeof content === "string" && content.length || Array.isArray(content) && content.length && content.every(b => b?.type === "text" && typeof b.text === "string"))) return null
+  body.messages.push({ role: "user", content: "Continue." })
+  return JSON.stringify(body)
+}
+
+async function inspectPrefillRefusal(response) {
+  if (!response.body) return { response, refused: false }
+  // Bound error inspection. Replay every consumed byte when it is not a
+  // recognized refusal, including oversized or non-JSON error responses.
+  const reader = response.body.getReader(), chunks = []
+  let size = 0, ended = false
+  while (size <= 16384) {
+    const part = await reader.read()
+    if (part.done) { ended = true; break }
+    chunks.push(part.value)
+    size += part.value.length
+  }
+  let refused = false
+  if (ended && size <= 16384) {
+    try {
+      const bytes = new Uint8Array(size)
+      let offset = 0
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
+      const message = JSON.parse(new TextDecoder().decode(bytes))?.error?.message
+      refused = typeof message === "string" && /does not support (?:assistant message )?prefill|requests ending with a model turn are not supported/i.test(message)
+    } catch {}
+  }
+  if (refused) { await reader.cancel(); return { response, refused } }
+  const replay = new ReadableStream({
+    async pull(controller) {
+      if (chunks.length) { controller.enqueue(chunks.shift()); return }
+      if (ended) { controller.close(); return }
+      try {
+        const part = await reader.read()
+        if (part.done) controller.close()
+        else controller.enqueue(part.value)
+      } catch (e) { controller.error(e) }
+    },
+    cancel: reason => reader.cancel(reason),
+  })
+  return { response: new Response(replay, { status: response.status, statusText: response.statusText, headers: response.headers }), refused }
+}
+
 export function createBillingTransport() {
   const routes = new Map()
   return {
@@ -88,7 +139,7 @@ export function createBillingTransport() {
       destination.pathname = destination.pathname.replace(/\/$/, "") + suffix
       destination.search = u.search
       const headers = withoutHopHeaders(request.headers)
-      let body
+      let body, inspectBody = null
       try {
         if (request.method === "POST") {
           const bytes = new Uint8Array(await request.arrayBuffer())
@@ -98,11 +149,19 @@ export function createBillingTransport() {
             const text = new TextDecoder().decode(bytes)
             const modified = addBilling(text, headers.get("user-agent"))
             if (modified !== text) body = modified
+            inspectBody = modified
           }
         }
         // An explicit empty proxy disables Bun's environment proxy. Direct mode
         // is required before changing native URLs, so both hops retain semantics.
-        const response = await fetch(destination, { method: request.method, headers, body, proxy: "", redirect: "manual", signal: request.signal })
+        const send = outgoing => fetch(destination, { method: request.method, headers, body: outgoing, proxy: "", redirect: "manual", signal: request.signal })
+        let response = await send(body)
+        const retryBody = response.status === 400 && inspectBody ? userLast(inspectBody, headers.get("user-agent")) : null
+        if (retryBody) {
+          const inspected = await inspectPrefillRefusal(response)
+          response = inspected.response
+          if (inspected.refused) response = await send(retryBody) // Exactly once; never retry a generated response.
+        }
         if (response.status >= 300 && response.status < 400) {
           await response.body?.cancel()
           return fail(502, "Claude transport does not follow upstream redirects.")
