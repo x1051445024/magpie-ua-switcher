@@ -1,6 +1,6 @@
 {
   "name": "magpie-ua-switcher",
-  "version": "1.8.8",
+  "version": "1.9.0",
   "description": "Switch the User-Agent magpie sends upstream (Codex CLI / Claude Code / pi / ZCode / opencode / Antigravity / custom) from a tiny local web page",
   "keywords": [
     "magpie",
@@ -20,6 +20,7 @@
   "files": [
     "index.mjs",
     "userid.mjs",
+    "claude-billing.mjs",
     "schema.middleware.mjs",
     "paths.mjs",
     "ui.html",

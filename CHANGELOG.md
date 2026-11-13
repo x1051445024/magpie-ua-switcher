@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.9.0 - 2026-11-13
+
+**补齐 Claude Code billing block，覆盖原生模型测试 / Add Claude Code billing blocks, including native model tests**
+
+### 中文
+
+- 新增网页全局矩阵中的 `Claude billing 兼容（本地转发）` 开关（`claudeBilling`，默认关闭），沿用全局档案、单供应商覆盖和排除规则。支持原生 Claude Messages 供应商，包括混线供应商的 Anthropic 地址。
+- 在最终 Anthropic 请求处通过本机转发添加独立 billing block，同时覆盖 Pi / 外部 Messages、Chat 转 Anthropic 与 Magpie 原生模型测试。保留调用方提示词、缓存标记、已有正版 block；计数 token 和列模型请求不注入，也不伪造辅助请求分类。
+- 记录原始地址与插件写入地址，关闭、排除、改档案时恢复认领的值，保留手工修改；重启复用路由身份，监听器就绪后再改写地址。监测供应商及全局代理配置变动。仅支持明确直连，网页显示自定义代理 / TLS 等不支持的原因。
+- 保持 Magpie 对 `/v1`、`/v1/messages` 上游地址的规范化行为；流式响应可停顿超过 10 秒，不受 Bun 默认空闲超时截断。
+- 新功能增加一次本机转发与请求体解析，上限 64 MiB。隔离本机 1 MiB 测量有波动，部分测试增加约 4–15 ms，也有低于基线的结果，不保证生产延迟。停用插件前应先关闭 billing，以恢复原地址。
+- 验证：原有 330 项回归断言、新增 38 项 billing 和 18 项网络检查，合计 386 项通过；真实 Magpie 和 Pi CLI 隔离测试，普通请求及原生模型测试从模拟上游的 400 变为 200，Chat 转换及流式响应通过。只用合成密钥和本机上游，不改真实配置；报告者实际中转站仍待复测，issue #3 保持开放。
+
+### English
+
+- Added a `Claude billing 兼容（本地转发）` switch in the Web UI's global matrix (`claudeBilling`, default off), following global profiles, provider overrides and exclusions for native Claude Messages endpoints, including mixed providers.
+- A loopback transport adds an independent billing block at the final Anthropic wire, covering Pi/external Messages, Chat conversion and native Magpie model tests. Preserve caller prompts, cache controls and genuine blocks; count-token/model-list requests pass through without injection or invented auxiliary classifications.
+- Track original and written URLs, restore owned values when disabling/excluding/changing profiles, preserve manual edits, reuse route identities on restart and bind before rewriting endpoints. Watch provider/global proxy changes. Require explicit direct networking and show unsupported proxy/TLS settings in the UI.
+- Match Magpie's normalization of `/v1` and `/v1/messages` upstream addresses. Streaming responses can pause beyond 10 seconds without Bun's default idle timeout cutting them off.
+- The optional feature adds a loopback hop and body parsing, with a 64 MiB request limit. Local 1 MiB results varied: some runs added about 4–15 ms, while others fell below baseline; these are not production latency guarantees. Disable billing before removing/disabling the plugin to restore original endpoints.
+- Validation: all 386 checks passed (330 existing assertions, 38 billing and 18 network checks), plus real isolated Magpie and Pi CLI requests. Ordinary and native model-test requests changed from synthetic-upstream 400 to 200; conversion and streaming passed. Synthetic keys/loopback only, no live config changes. Reporter relay confirmation is pending; issue #3 remains open.
+
 ## 1.8.8 - 2026-11-12
 
 **按 Claude Code 版本选择 metadata 身份编码 / Match metadata identity encoding to the Claude Code version**

@@ -37,6 +37,11 @@ import {
   zcodeMidPath,
 } from "./paths.mjs"
 import { CLAUDE_CODE_PROFILES, formatUserId, isOurMetadata, peekBaseId, resetUserIdMemo, userId } from "./userid.mjs"
+import { BILLING_BODY_LIMIT, BILLING_PREFIX, billingUnavailable, createBillingTransport, validBillingTarget } from "./claude-billing.mjs"
+
+let billingTransport = createBillingTransport()
+let billingStatus = { providers: [], unavailable: {} }
+let billingWatch = null
 
 let CONFIG_PATH = configPath()
 let PROVIDERS_PATH = providersPath()
@@ -49,6 +54,7 @@ let providersUiCache = { mtime: -1, list: null, error: null } // read-only once 
 let zcodeMidCache = { checkedAt: 0, mid: "" }
 let lastAppliedMtime = -1
 let lastProvidersMtime = -1
+let lastBillingSettingsStamp = ""
 let providerNotification = Promise.resolve()
 
 function refreshPaths() {
@@ -68,6 +74,9 @@ function refreshPaths() {
     resetUserIdMemo() // the identity file moved with the config folder
     lastAppliedMtime = -1
     lastProvidersMtime = -1
+    lastBillingSettingsStamp = ""
+    billingTransport = createBillingTransport()
+    billingStatus = { providers: [], unavailable: {} }
   }
 }
 
@@ -286,6 +295,8 @@ const DEFAULTS = {
   appliedHeaders: {},
   appliedMeta: {},
   sessionIds: {},
+  claudeBilling: false,
+  appliedBilling: {},
   autoVersions: true,
   updateEveryHours: 24,
   registry: null, // extra npm registry tried first, e.g. https://registry.npmmirror.com
@@ -364,6 +375,8 @@ function normalize(raw) {
   // metadata.user_id for Claude Code profiles: written as the provider's
   // extraBody by providersApply, and merged upstream by magpie itself
   c.injectMetadata = c.injectMetadata !== false
+  c.claudeBilling = c.claudeBilling === true
+  c.appliedBilling = c.appliedBilling && typeof c.appliedBilling === "object" && !Array.isArray(c.appliedBilling) ? c.appliedBilling : {}
   return c
 }
 
@@ -735,6 +748,18 @@ function providersApply(cfg) {
   const applied = Object.assign(Object.create(null), cfg.applied)
   const appliedHeaders = Object.assign(Object.create(null), cfg.appliedHeaders)
   const appliedMeta = Object.assign(Object.create(null), cfg.appliedMeta)
+  const appliedBilling = Object.assign(Object.create(null), cfg.appliedBilling)
+  const ownsServer = server && typeof server === "object"
+  if (ownsServer) {
+    const present = new Set(json.providers.filter(p => p && typeof p.id === "string").map(p => p.id))
+    for (const id of Object.keys(appliedBilling)) if (!present.has(id)) delete appliedBilling[id]
+  }
+  const activeBillingTokens = new Set()
+  const nextBillingStatus = { providers: [], unavailable: Object.create(null) }
+  let globalDirect = false
+  const settingsPath = path.join(path.dirname(PROVIDERS_PATH), "settings.json")
+  try { globalDirect = JSON.parse(fs.readFileSync(settingsPath, "utf8")).proxy === "direct" } catch {}
+  try { const stat = fs.statSync(settingsPath); lastBillingSettingsStamp = `${stat.mtimeMs}:${stat.size}` } catch { lastBillingSettingsStamp = "" }
   let idForThisPass = null // userId() reads and may write a file: once a pass
   let baseForThisPass = null // peekBaseId() reads it the same way
   let changed = false
@@ -825,6 +850,30 @@ function providersApply(cfg) {
     }
     if (wrote.length) appliedMeta[p.id] = wrote
     else delete appliedMeta[p.id]
+
+    // Only the process holding the UI port owns native transport URLs. Sibling
+    // plugin hosts may still update headers, without creating another relay.
+    if (ownsServer) {
+      const record = appliedBilling[p.id]
+      const ours = record && typeof record.value === "string" && p.anthropic === record.value && validBillingTarget(record.before)
+      const target = ours ? record.before : p.anthropic
+      const ua = Object.entries(headers).find(([k]) => k.toLowerCase() === "user-agent")?.[1] ?? ""
+      const wanted = cfg.claudeBilling && CLAUDE_CODE_PROFILES.has(name) && /^claude-cli\/\d+\.\d+\.\d+(?=[\s+-]|$)/i.test(ua) && messagesWire(p) && typeof target === "string" && target.length > 0
+      let reason = wanted ? billingUnavailable(p, globalDirect) : null
+      if (wanted && !validBillingTarget(target)) reason = "无效的上游地址或原地址记录缺失；请先在 Magpie 中恢复原始 Anthropic 地址"
+      if (wanted && !reason) {
+        const token = billingTransport.register(target, ours ? record.token : undefined)
+        const value = `http://127.0.0.1:${server.port}${BILLING_PREFIX}${token}`
+        if (p.anthropic !== value) { p.anthropic = value; changed = true }
+        appliedBilling[p.id] = { before: target, value, token }
+        activeBillingTokens.add(token)
+        nextBillingStatus.providers.push(p.id)
+      } else {
+        if (ours) { p.anthropic = record.before; changed = true }
+        delete appliedBilling[p.id]
+        if (reason) nextBillingStatus.unavailable[p.id] = reason
+      }
+    }
   }
   if (changed) {
     try {
@@ -851,8 +900,14 @@ function providersApply(cfg) {
   const ledgersChanged =
     JSON.stringify(applied) !== JSON.stringify(cfg.applied ?? {}) ||
     JSON.stringify(appliedHeaders) !== JSON.stringify(cfg.appliedHeaders ?? {}) ||
-    JSON.stringify(appliedMeta) !== JSON.stringify(cfg.appliedMeta ?? {})
-  if (ledgersChanged) saveCfg({ applied, appliedHeaders, appliedMeta })
+    JSON.stringify(appliedMeta) !== JSON.stringify(cfg.appliedMeta ?? {}) ||
+    JSON.stringify(appliedBilling) !== JSON.stringify(cfg.appliedBilling ?? {})
+  if (ledgersChanged) saveCfg({ applied, appliedHeaders, appliedMeta, appliedBilling })
+  if (ownsServer) {
+    billingTransport.retireExcept(activeBillingTokens)
+    nextBillingStatus.providers.sort()
+    billingStatus = nextBillingStatus
+  }
   try {
     lastAppliedMtime = cache.mtime
     lastProvidersMtime = fs.statSync(PROVIDERS_PATH).mtimeMs
@@ -1155,11 +1210,13 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.8.8",
+    version: "1.9.0",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,
     injectMetadata: cfg.injectMetadata !== false,
+    claudeBilling: cfg.claudeBilling,
+    billing: { ...billingStatus, via: "loopback", maxBodyMiB: 64 },
     metadata: {
       via: "extraBody",
       profiles: [...CLAUDE_CODE_PROFILES],
@@ -1241,6 +1298,11 @@ function isSameOriginRequest(req, url) {
 
 async function handle(req) {
   const url = new URL(req.url)
+  if (url.pathname.startsWith(BILLING_PREFIX)) {
+    const host = (req.headers.get("host") ?? "").split(":")[0]
+    if (host !== "127.0.0.1" && host !== "localhost") return json({ error: "invalid transport host" }, 403)
+    return billingTransport.handle(req)
+  }
   if (!isSameOriginRequest(req, url)) {
     return json({ ok: false, error: "forbidden cross-origin or invalid host request" }, 403)
   }
@@ -1284,6 +1346,10 @@ async function handle(req) {
       if ("injectMetadata" in body) {
         if (typeof body.injectMetadata !== "boolean") throw new Error("injectMetadata 必须是布尔值")
         patch.injectMetadata = body.injectMetadata
+      }
+      if ("claudeBilling" in body) {
+        if (typeof body.claudeBilling !== "boolean") throw new Error("claudeBilling 必须是布尔值")
+        patch.claudeBilling = body.claudeBilling
       }
       if ("autoVersions" in body) {
         if (typeof body.autoVersions !== "boolean") throw new Error("autoVersions 必须是布尔值")
@@ -1343,11 +1409,14 @@ function bindAttempt(scheduleRetries = true) {
     server = Bun.serve({
       port: cfg.port,
       hostname: "127.0.0.1",
+      maxRequestBodySize: BILLING_BODY_LIMIT,
+      idleTimeout: 0, // Magpie owns turn timeouts; model streams may pause >10s.
       fetch: handle,
     })
     globalThis.__uaSwitcherServer = server
     clearBindRetries()
     note(`web switcher ready at http://127.0.0.1:${server.port}`)
+    providersApply(loadCfg()) // listener exists before any native URL is changed
     return true
   } catch (e) {
     const isAddrInUse = e?.code === "EADDRINUSE" || /EADDRINUSE|address already in use|Failed to listen/i.test(e?.message ?? "")
@@ -1362,10 +1431,23 @@ function bindAttempt(scheduleRetries = true) {
 }
 
 function startServer() {
+  if (billingWatch) clearInterval(billingWatch)
   try {
     if (globalThis.__uaSwitcherServer) globalThis.__uaSwitcherServer.stop(true)
   } catch {}
+  server = null
   bindAttempt(true)
+  billingWatch = setInterval(() => {
+    if (!server || typeof server !== "object") return
+    const cfg = loadCfg()
+    if (!cfg.claudeBilling && !Object.keys(cfg.appliedBilling).length) return
+    let mtime = -1
+    try { mtime = fs.statSync(PROVIDERS_PATH).mtimeMs } catch {}
+    let settingsStamp = ""
+    try { const stat = fs.statSync(path.join(path.dirname(PROVIDERS_PATH), "settings.json")); settingsStamp = `${stat.mtimeMs}:${stat.size}` } catch {}
+    if (cache.mtime !== lastAppliedMtime || mtime !== lastProvidersMtime || settingsStamp !== lastBillingSettingsStamp) providersApply(cfg)
+  }, 1000)
+  billingWatch.unref?.()
 }
 
 // ---- entry ------------------------------------------------------------------------

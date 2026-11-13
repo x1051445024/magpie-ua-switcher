@@ -672,8 +672,14 @@
             <input type="checkbox" id="sw-metadata" class="switch-input" checked>
             <span>自动注入 Claude Code <code class="mono">metadata.user_id</code></span>
           </label>
+          <label class="switch-label" title="为 Claude Code / pi 档案的原生 Anthropic 地址启用本地转发，补齐独立 billing block；沿用全局、单供应商覆盖与排除规则">
+            <input type="checkbox" id="sw-billing" class="switch-input">
+            <span>Claude billing 兼容（本地转发）</span>
+          </label>
         </div>
       </div>
+
+      <p class="section-desc" id="billing-status" style="margin-bottom:18px">Claude billing 兼容默认关闭。开启后跟随档案与排除规则，关闭可恢复原地址。</p>
 
       <div id="profile-grid" class="profile-grid">加载中...</div>
     </section>
@@ -1027,6 +1033,11 @@
       $("#port-label").textContent = "127.0.0.1:" + (S.port || 3426);
       $("#active-pill").textContent = S.profile || "off";
       $("#sw-metadata").checked = S.injectMetadata !== false;
+      $("#sw-billing").checked = S.claudeBilling === true;
+      const billing = S.billing || { providers: [], unavailable: {} };
+      $("#billing-status").textContent = S.claudeBilling
+        ? "Claude billing 兼容已开启 · 生效供应商 " + (billing.providers || []).length + " 个。仅处理 Claude Messages 请求，需直连；每次请求增加本地转发与正文处理。无法启用的原因见下表。"
+        : "Claude billing 兼容已关闭。开启后跟随全局档案、单供应商覆盖与排除规则；关闭恢复插件改写的原地址。";
 
       const verMap = getVersionValues();
 
@@ -1242,6 +1253,8 @@
             </td>
             <td>
               <span class="badge badge-muted">${esc(p.wire || "other")}</span>
+              ${(S.billing?.providers || []).includes(p.id) ? '<div style="font-size:0.8em;color:var(--accent);margin-top:5px">billing 已启用</div>' : ''}
+              ${S.billing?.unavailable?.[p.id] ? '<div style="font-size:0.8em;color:var(--text-muted);margin-top:5px">' + esc(S.billing.unavailable[p.id]) + '</div>' : ''}
             </td>
             <td>
               <select class="prov-route-sel" data-id="${esc(p.id)}" style="width:100%;max-width:230px">
@@ -1516,6 +1529,23 @@
         });
         if (!r.ok) throw new Error((await r.json()).error || "保存失败");
         toast("metadata.user_id 自动注入已" + (val ? "开启" : "关闭"));
+        load(true);
+      } catch (err) {
+        e.target.checked = !val;
+        toast(err.message || "保存失败", true);
+      }
+    };
+
+    $("#sw-billing").onchange = async (e) => {
+      const val = e.target.checked;
+      if (isOfflinePreview) { S.claudeBilling = val; render(); return; }
+      try {
+        const r = await fetch("/config", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claudeBilling: val })
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "保存失败");
+        toast("Claude billing 兼容已" + (val ? "开启" : "关闭"));
         load(true);
       } catch (err) {
         e.target.checked = !val;

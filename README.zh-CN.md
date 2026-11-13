@@ -13,7 +13,15 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 
 第三个字段：当生效档案是 `claude-code`（或 pi 的 anthropic 形态）时，插件把 Claude Code 的 `metadata.user_id` 写进 **Messages 线路 provider 的 `extraBody`**，由 magpie 自己在请求发出前合进请求体。从 1.8.8 起，编码跟随实际生效的 User-Agent：`claude-cli/2.1.78` 及以上使用含 `device_id`、`account_uuid`、`session_id` 的 JSON 字符串；旧版本保留 `user_..._account_..._session_...` 字符串。版本钉死和按 provider 覆盖切换格式时保留同一组身份字段。设备和账号基底持久化在配置同目录，会话 UUID 在宿主重启或四小时窗口后轮换。客户端自带的 metadata 和手工配置的身份会保留。可在网页「Provider 设置」里关闭注入（配置项 `injectMetadata`）。
 
-严格 Claude Code-only 中转站还可能校验系统提示词、请求结构，以及自身的会话或请求身份。仅补齐 UA 与 `metadata.user_id` 不能保证通过；插件保留调用方的系统提示词。[issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 中发现的版本与 metadata 编码不匹配已修复并测试，但报告者那条 `400 Invalid Claude request identity` 仍需结合其中转站和客户端版本复测。
+### Claude Code billing block（1.9.0）
+
+如果中转站报 `official Anthropic accounts require a Claude Code billing block`，在网页的**全局身份伪装矩阵**中选择 **Claude Code**，并开启 **Claude billing 兼容（本地转发）**，同时保留 metadata 注入。新开关默认关闭（`claudeBilling: false`）。沿用原有全局档案、单供应商覆盖和排除规则，一起覆盖符合条件的原生 Anthropic 地址，包括混线供应商的 Messages 地址；其它档案的请求头切换逻辑保持原样。
+
+开启后，最终 Anthropic 请求通过网页开关的同一本机监听端口转发，因此同时覆盖外部 `/v1/messages` 客户端（包括 Pi）、Chat 转 Anthropic 和 Magpie 原生模型测试按钮。插件根据最终发出的 Claude UA 版本添加独立 attribution block，保留调用方系统提示词、缓存标记和已有的正版 billing block。计数 token、列模型请求不注入 billing。不伪造辅助请求分类，也不要求运行正版 Claude Code 或设置其环境开关。
+
+需要将该供应商的代理，或它继承的 Magpie 全局代理，明确设为**直连**。自定义代理、继承系统代理、单账号代理、自定义 TLS 和强制 HTTP/1 暂不支持；网页会显示原因并保留原上游地址。转发开启时插件监听器必须保持运行；停用或卸载插件前，先关闭 billing，让插件恢复其认领的原地址，后续手工改动会保留。此功能增加一次本机转发和请求体解析，单请求上限 64 MiB。1 MiB 的本机测量有波动：部分测试增加约 4–15 ms，也有低于基线的结果，不代表生产环境的固定延迟。
+
+严格中转站仍可能有额外的提示词、会话和请求校验。[issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 的 billing 要求已在隔离的真实 Magpie / Pi 测试中覆盖，仍待报告者在其实际中转站复测确认。
 
 1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。详见 [CHANGELOG](CHANGELOG.md) 1.8.0。
 
@@ -111,8 +119,9 @@ codex/pi 的 UA 系统段按当前机器动态生成（与真实客户端行为�
 - `autoVersions` / `updateEveryHours` / `registry`：npm 版本自动更新的开关、查询间隔（小时）、额外的首选 registry。
 - `versions`：手动钉版本，如 `{"codex": "0.170.0"}`，优先级最高。
 - `injectMetadata`：默认 true。为 Claude Code 身份档案的 Messages provider 写 `metadata.user_id`（providers.json 的 `extraBody`）；关掉即把插件写过的那份撤掉，不碰其它。
+- `claudeBilling`：默认 false。为支持的原生 Claude Messages 供应商开启最终请求的本机转发；网页显示生效供应商和不支持的网络设置。
 - `profiles`：自定义档案，合并覆盖同名内置。单形态 `{ "label", "ua", "headers": {"any","anthropic","openai"} }`；双形态 `forms: { anthropic, openai, default }`。
-- `applied` / `appliedHeaders` / `appliedMeta`：插件内部记账（providers.json 的 header 键名、写入值和覆盖前的值，以及 extraBody 字段），勿手工编辑，也勿在保留新版 provider 请求头时回写旧版记账数据。
+- `applied` / `appliedHeaders` / `appliedMeta` / `appliedBilling`：插件内部记账，保存 providers.json 的原始/写入请求头、metadata 和转发地址；勿手工编辑，也勿在保留新版供应商配置时回写旧版记账数据。
 - `sessionIds`：内部 Codex 和 opencode 会话标识，持久化后宿主重载不会重新生成请求头并触发反复重载。
 
 ### 文件位置
