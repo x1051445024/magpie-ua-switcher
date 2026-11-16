@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.9.2 - 2026-11-17
+
+**修复 WebKit 内嵌控制页连接 switcher 服务失败 (Issue #5, PR #4) / Fix WebKit embedded control page connection failure (Issue #5, PR #4)**
+
+### 中文
+
+- 修复 macOS Magpie 菜单栏内嵌页面提示“无法连接 switcher 服务”的问题（Issue #5，PR #4，感谢 @lazzman）。
+- 根因分析：在 macOS WebKit (WKWebView) 沙箱环境中，内嵌文档的 Origin 会被置为不透明来源（Opaque Origin，`null`）。根据 CSP 规范，`connect-src 'self'` 无法在 Opaque Origin 下匹配当前本地服务端口，导致 API 请求被 WebKit 拦截。而在独立浏览器中直接打开时为正常同源，故此前仅在内嵌环境下触发。
+- 修复方案：针对内嵌页面（`embedded === true`），在 CSP 响应头的 `connect-src` 指令中显式追加当前本地服务源 `${url.origin}`；非内嵌独立页面继续保持严格同源并保留 `frame-ancestors 'none'` 防御。
+- 回归测试：扩展 `selftest-page.mjs`，增加对内嵌页 CSP、`Origin: null` 下状态接口请求及 CORS 响应头的断言。
+
+### English
+
+- Fix the connection failure in Magpie's macOS menubar embedded control page showing "cannot connect to switcher service" (Issue #5, PR #4, thanks to @lazzman).
+- Root cause: Under macOS WebKit (WKWebView) sandboxed iframe environments, the embedded document's origin evaluates to an opaque origin (`null`). Under CSP specifications, `connect-src 'self'` fails to match the local loopback origin from an opaque origin context, causing local API requests to be blocked by WebKit. Opening the page directly in a standalone browser did not encounter this as its origin is standard same-origin.
+- Fix: For embedded pages (`embedded === true`), explicitly append `${url.origin}` to the CSP `connect-src` directive while keeping standalone pages strictly same-origin with `frame-ancestors 'none'`.
+- Regression tests: Extended `selftest-page.mjs` to assert embedded CSP directives, `Origin: null` state queries, and CORS response headers.
+
 ## 1.9.1 - 2026-11-13
 
 **修复 assistant prefill 拒绝，新增 Magpie 内置控制页 / Handle assistant prefill refusals and embed the control page in Magpie**
