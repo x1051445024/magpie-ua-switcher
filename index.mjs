@@ -1349,7 +1349,7 @@ async function handleUI(req, url, embedded) {
         "content-type": "text/html; charset=utf-8",
         ...(embedded ? { "referrer-policy": "no-referrer" } : { "X-Frame-Options": "DENY" }),
         "Content-Security-Policy":
-          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" + (embedded ? "" : "; frame-ancestors 'none'"),
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" + (embedded ? ` ${url.origin}` : "; frame-ancestors 'none'"),
       },
     })
   }
