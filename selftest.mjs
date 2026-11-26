@@ -83,10 +83,12 @@ h = await apply("any", "@ai-sdk/anthropic")
 eq("claude-code ua", h["User-Agent"], "claude-cli/2.1.310 (external, cli)")
 eq("claude-code x-app", h["X-App"], "cli")
 eq("claude-code beta prefix", String(h["anthropic-beta"]).startsWith("claude-code-20250219"), true)
+eq("claude-code dangerous-direct-browser-access", h["anthropic-dangerous-direct-browser-access"], "true")
 eq("claude-code stainless", h["X-Stainless-Lang"], "js")
 h = await apply("any", "@ai-sdk/openai")
 eq("claude-code openai keeps neutral X-App", h["X-App"], "cli")
 eq("claude-code openai no anthropic headers", "anthropic-beta" in h, false)
+eq("claude-code openai no dangerous-direct-browser-access", "anthropic-dangerous-direct-browser-access" in h, false)
 
 // pi dual form
 await fetch(base + "/set/pi", { method: "POST" })
@@ -625,6 +627,23 @@ writeProviders((ps) => {
 await setProfile("claude-code")
 eq("a lone anthropic endpoint does not move the headers", providerOf("p-responses")?.headers?.["anthropic-version"] ?? null, null)
 eq("but it is a Messages provider for the user_id", USER_ID.test(uidOf("p-responses")), true)
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-responses")
+  p.responses = "   "
+})
+await setProfile("claude-code")
+eq("whitespace responses does not classify provider as openai", (await (await fetch(`${base}/state`)).json()).providers.find((p) => p.id === "p-responses")?.wire, "other")
+writeProviders((ps) => {
+  const p = ps.find((x) => x.id === "p-anthropic")
+  p.responses = ""
+})
+await setProfile("claude-code")
+eq("empty responses preserves anthropic wire from baseURL", (await (await fetch(`${base}/state`)).json()).providers.find((p) => p.id === "p-anthropic")?.wire, "anthropic")
+eq("empty responses keeps anthropic-version header", providerOf("p-anthropic")?.headers?.["anthropic-version"], "2023-06-01")
+eq("empty responses keeps anthropic-beta header", String(providerOf("p-anthropic")?.headers?.["anthropic-beta"] ?? "").startsWith("claude-code-20250219"), true)
+writeProviders((ps) => {
+  delete ps.find((x) => x.id === "p-anthropic").responses
+})
 writeProviders((ps) => {
   const p = ps.find((x) => x.id === "p-responses")
   p.responses = "http://x/v1"

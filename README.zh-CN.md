@@ -23,6 +23,8 @@ magpie 有两条上游请求路径，本插件各覆盖一条：
 
 从 **1.9.1** 起，该兼容路径也处理 `This model does not support assistant message prefill`：仅当上游明确返回对应的 **400**，且最后一条是纯文本 assistant 消息时，保留原历史并追加一条 user `Continue.`，重试一次。成功请求不改历史，其它错误按原样返回；待执行的工具调用不重试。流式和非流式均支持，系统提示词、缓存标记、metadata 和 billing block 保持一致。被拒绝的请求会多一次上游往返。
 
+从 **1.9.3** 起，该兼容路径还会在最终 Anthropic 线路上自动补齐缺失的 Claude Code 专属请求头（合并 `anthropic-beta`、补齐 `anthropic-version`、`anthropic-dangerous-direct-browser-access`、`X-Stainless-*`、`X-App`），解决混线供应商（或界面显示为 `openai` 协议）因头组隔离而漏发 Anthropic 请求头的问题，同时不向 OpenAI / Responses 线路泄露。
+
 严格中转站仍可能验证其它系统提示词、会话或请求特征。[issue #3](https://github.com/x1051445024/magpie-ua-switcher/issues/3) 的报告者已确认 1.9.0 模型测试及 Pi 初始请求正常；新增 prefill 修复通过了隔离真实 Magpie 测试，实际中转站的长会话仍待复测。
 
 1.8.0 之前这个字段来自 **gateway 钩子**（`hooks.mjs`，由 `package.json` 的 `magpie.hooks` 声明），钩子已删除。在小内存机器上装旧版本会撑爆内存：只要声明了这个钩子，magpie 就会把**每一个** agent 请求体——完整历史、系统提示词、工具定义——通过 RPC 复制进 Bun 插件宿主，在宿主里再深拷贝一份，并为防篡改校验重新序列化，哪怕钩子最后对这个请求什么都没改。换到 `extraBody` 后这条路径完全消失。详见 [CHANGELOG](CHANGELOG.md) 1.8.0。

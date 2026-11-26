@@ -5,7 +5,9 @@ import { createHash, randomBytes } from "node:crypto"
 export const BILLING_PREFIX = "/_ua_claude/"
 export const BILLING_BODY_LIMIT = 64 * 1024 * 1024
 const TOKEN_RE = /^[0-9a-f]{48}$/
+const CLAUDE_UA_RE = /^claude-cli\/(\d+\.\d+\.\d+)(?=[\s+-]|$)/i
 const HOP_HEADERS = ["host", "connection", "content-length", "transfer-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade"]
+const PROTECTED_ROUTE_HEADERS = new Set([...HOP_HEADERS, "authorization", "x-api-key", "user-agent"])
 
 export function validBillingTarget(value) {
   try {
@@ -22,7 +24,7 @@ export function billingUnavailable(provider, globalDirect) {
 }
 
 export function addBilling(raw, ua) {
-  const version = /^claude-cli\/(\d+\.\d+\.\d+)(?=[\s+-]|$)/i.exec(ua ?? "")?.[1]
+  const version = CLAUDE_UA_RE.exec(ua ?? "")?.[1]
   if (!version) return raw
   let body
   try { body = JSON.parse(raw) } catch { return raw }
@@ -48,8 +50,48 @@ function withoutHopHeaders(input) {
   return h
 }
 
+function sanitizeRouteHeaders(input) {
+  const out = {}
+  if (!input || typeof input !== "object" || Array.isArray(input)) return out
+  for (const [k, v] of Object.entries(input)) {
+    if (typeof v !== "string" || !v) continue
+    if (PROTECTED_ROUTE_HEADERS.has(k.toLowerCase())) continue
+    out[k] = v
+  }
+  return out
+}
+
+function mergeBetaHeader(existing, wanted) {
+  const parts = []
+  const seen = new Set()
+  for (const raw of [wanted, existing]) {
+    if (!raw) continue
+    for (const item of String(raw).split(",")) {
+      const token = item.trim()
+      if (!token) continue
+      const key = token.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      parts.push(token)
+    }
+  }
+  return parts.join(",")
+}
+
+function applyAnthropicHeaders(headers, routeHeaders, ua) {
+  if (!routeHeaders || !CLAUDE_UA_RE.test(ua ?? "")) return
+  for (const [k, v] of Object.entries(routeHeaders)) {
+    if (k.toLowerCase() === "anthropic-beta") {
+      const merged = mergeBetaHeader(headers.get("anthropic-beta"), v)
+      if (merged) headers.set("anthropic-beta", merged)
+    } else if (!headers.has(k)) {
+      headers.set(k, v)
+    }
+  }
+}
+
 function userLast(raw, ua) {
-  if (!/^claude-cli\/\d+\.\d+\.\d+(?=[\s+-]|$)/i.test(ua ?? "")) return null
+  if (!CLAUDE_UA_RE.test(ua ?? "")) return null
   let body
   try { body = JSON.parse(raw) } catch { return null }
   if (!/^claude(?:-|$)/i.test(body?.model ?? "") || !Array.isArray(body.messages)) return null
@@ -102,7 +144,7 @@ async function inspectPrefillRefusal(response) {
 export function createBillingTransport() {
   const routes = new Map()
   return {
-    register(target, token) {
+    register(target, token, extraHeaders = null) {
       if (!validBillingTarget(target)) throw new Error("无效的 Anthropic 上游地址")
       if (!TOKEN_RE.test(token ?? "")) token = randomBytes(24).toString("hex")
       // Match Magpie's native Anthropic base normalization before appending
@@ -112,7 +154,7 @@ export function createBillingTransport() {
       for (const suffix of ["/v1/messages", "/v1"]) {
         if (upstream.pathname.endsWith(suffix)) { upstream.pathname = upstream.pathname.slice(0, -suffix.length); break }
       }
-      routes.set(token, { target: upstream.href, active: true, until: Infinity })
+      routes.set(token, { target: upstream.href, active: true, until: Infinity, headers: sanitizeRouteHeaders(extraHeaders) })
       return token
     },
     retireExcept(active) {
@@ -139,6 +181,7 @@ export function createBillingTransport() {
       destination.pathname = destination.pathname.replace(/\/$/, "") + suffix
       destination.search = u.search
       const headers = withoutHopHeaders(request.headers)
+      if (r.active) applyAnthropicHeaders(headers, r.headers, headers.get("user-agent"))
       let body, inspectBody = null
       try {
         if (request.method === "POST") {

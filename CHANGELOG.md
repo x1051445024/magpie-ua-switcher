@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.9.3 - 2026-11-26
+
+**补全混线与 billing 转发路径下的 Anthropic 请求头，修复空 `responses` 字段协议误判 (Issue #6) / Supplement Anthropic headers on billing transport and fix empty `responses` wire detection (Issue #6)**
+
+### 中文
+
+- 排查 [issue #6](https://github.com/x1051445024/magpie-ua-switcher/issues/6) 截图后发现：当供应商在 `providers.json` 中携带空 `responses` 字段（`""`）或采用混线配置使界面协议列显示为 `openai` 时，`wireOf(p)` 会将其判为 `"openai"`，而 `messagesWire(p)` 仍会开启 `metadata.user_id` 与 `Claude billing 兼容（本地转发）`，导致最终打往 Anthropic 端点的请求漏掉 `anthropic-beta`、`anthropic-version`、`X-Stainless-*` 等专属请求头。
+- 修复 `wireOf(p)`：仅当 `p.responses` 为非空字符串（`p.responses.trim() !== ""`）时才视为存在 Responses 地址，避免空字符串覆盖 `baseURL` 中的 `anthropic` 判定。
+- 在 `claude-code` 档案的 `anthropic` 头组补齐 `"anthropic-dangerous-direct-browser-access": "true"`。
+- 增强 `Claude billing 兼容（本地转发）`（`claude-billing.mjs`）：注册路由时携带所属档案的 `anthropic` 伴随头，对处于激活状态且请求 `User-Agent` 为 `claude-cli/x.y.z` 的 Anthropic 转发请求自动补齐缺失的请求头，并将 `anthropic-beta` 去重合并（保留调用方头、过滤受保护的认证与连接头），同时不向 OpenAI / Responses 线路泄露。
+- 验证：5 组隔离自检合计 **471 项检查**全部通过（`selftest.mjs` 336、`selftest-claude-billing.mjs` 50、`selftest-claude-transport.mjs` 22、`selftest-claude-prefill.mjs` 37、`selftest-page.mjs` 26）；未访问报告者中转站或修改日常配置，issue #6 保持开放等待复测确认。
+
+### English
+
+- While investigating the screenshot in [issue #6](https://github.com/x1051445024/magpie-ua-switcher/issues/6), found that when a provider in `providers.json` has an empty `responses` field (`""`) or is configured as a mixed provider whose UI wire displays `openai`, `wireOf(p)` classified it as `"openai"` while `messagesWire(p)` still enabled `metadata.user_id` and `Claude billing 兼容（本地转发）`. As a result, requests to the Anthropic endpoint omitted `anthropic-beta`, `anthropic-version`, and `X-Stainless-*` headers.
+- Fixed `wireOf(p)` to treat `p.responses` as present only when `p.responses.trim() !== ""`, preventing an empty string from overriding `anthropic` detection from `baseURL`.
+- Added `"anthropic-dangerous-direct-browser-access": "true"` to the `claude-code` profile's `anthropic` headers.
+- Enhanced the `Claude billing 兼容（本地转发）` loopback transport (`claude-billing.mjs`) to carry the profile's `anthropic` headers per active route and supplement missing companion headers (merging `anthropic-beta` without duplicates while preserving caller headers and blocking protected auth/hop headers) for requests with a `claude-cli/x.y.z` `User-Agent`, without leaking them to OpenAI/Responses endpoints.
+- Validation: all **471 checks** across the 5 isolated selftest suites passed (`selftest.mjs`: 336, `selftest-claude-billing.mjs`: 50, `selftest-claude-transport.mjs`: 22, `selftest-claude-prefill.mjs`: 37, `selftest-page.mjs`: 26). No live config changes or reporter-relay access; issue #6 remains open pending confirmation.
+
 ## 1.9.2 - 2026-11-17
 
 **修复 WebKit 内嵌控制页连接 switcher 服务失败 (Issue #5, PR #4) / Fix WebKit embedded control page connection failure (Issue #5, PR #4)**

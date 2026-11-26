@@ -197,6 +197,7 @@ function builtinProfiles(V, sessionIds = {}) {
           "anthropic-version": "2023-06-01",
           "anthropic-beta":
             "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20",
+          "anthropic-dangerous-direct-browser-access": "true",
           "X-Stainless-Lang": "js",
           "X-Stainless-Package-Version": "0.112.1",
           "X-Stainless-Os": STAINLESS_OS,
@@ -667,7 +668,7 @@ function protocolOf(msg) {
 function wireOf(p) {
   if (!p || typeof p !== "object") return "other"
   if (p.baseAPI === "anthropic") return "anthropic"
-  if (p.baseAPI === "responses" || typeof p.responses === "string") return "openai"
+  if (p.baseAPI === "responses" || (typeof p.responses === "string" && p.responses.trim() !== "")) return "openai"
   if (/anthropic/i.test(String(p.baseURL ?? ""))) return "anthropic"
   return "other"
 }
@@ -862,7 +863,8 @@ function providersApply(cfg) {
       let reason = wanted ? billingUnavailable(p, globalDirect) : null
       if (wanted && !validBillingTarget(target)) reason = "无效的上游地址或原地址记录缺失；请先在 Magpie 中恢复原始 Anthropic 地址"
       if (wanted && !reason) {
-        const token = billingTransport.register(target, ours ? record.token : undefined)
+        const anthropicForm = resolveForm(profiles[name], "anthropic")
+        const token = billingTransport.register(target, ours ? record.token : undefined, anthropicForm?.headers ?? null)
         const value = `http://127.0.0.1:${server.port}${BILLING_PREFIX}${token}`
         if (p.anthropic !== value) { p.anthropic = value; changed = true }
         appliedBilling[p.id] = { before: target, value, token }
@@ -1210,7 +1212,7 @@ function state() {
     .sort()
   return {
     plugin: "ua-switcher",
-    version: "1.9.2",
+    version: "1.9.3",
     profile: cfg.profile,
     excludeProviders: cfg.excludeProviders,
     providerOverrides: cfg.providerOverrides,

@@ -44,9 +44,27 @@ try {
   const compressed = gzipSync(payload)
   await fetch(base + "/v1/messages", { ...options, headers: { ...options.headers, "content-encoding": "gzip" }, body: compressed })
   check("encoded request bytes kept", [...observed.bytes], [...compressed])
+  manager.register(`http://127.0.0.1:${upstream.port}`, token, {
+    "anthropic-beta": "claude-code-20250219,extra-a",
+    "X-Stainless-Lang": "js",
+    "x-api-key": "blocked",
+  })
+  await fetch(base + "/v1/messages", {
+    ...options,
+    headers: {
+      ...options.headers,
+      "x-api-key": "real-key",
+      "X-Stainless-Lang": "custom",
+      "anthropic-beta": "extra-a,caller-beta",
+    },
+  })
+  check("protected route header never overwrites x-api-key", observed.headers.get("x-api-key"), "real-key")
+  check("existing header preserved over route default", observed.headers.get("x-stainless-lang"), "custom")
+  check("anthropic-beta merges without duplicates", observed.headers.get("anthropic-beta"), "claude-code-20250219,extra-a,caller-beta")
   manager.retireExcept(new Set())
   await fetch(base + "/v1/messages", options)
   check("retired route forwards without injection", new TextDecoder().decode(observed.bytes), payload)
+  check("retired route does not inject route headers", observed.headers.get("anthropic-beta"), null)
   manager.register(`http://127.0.0.1:${upstream.port}`, token)
   mode = "stream"
   const controller = new AbortController()

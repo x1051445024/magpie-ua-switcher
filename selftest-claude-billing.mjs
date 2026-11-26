@@ -78,6 +78,21 @@ try {
   check("fixed path mapping", last.path, "/relay/v1/messages")
   check("credentials retained", last.headers.get("x-api-key"), "synthetic-key")
   check("no invented auxiliary class", last.headers.get("x-claude-code-request-class"), null)
+  check("mixed OpenAI/Responses wire omits Anthropic beta", "anthropic-beta" in (ps[1].headers ?? {}), false)
+  check("mixed OpenAI/Responses wire omits Stainless", "X-Stainless-Lang" in (ps[1].headers ?? {}), false)
+  const mixedRoute = ps[1].anthropic
+  check("mixed provider Anthropic forwarding succeeds", (await send(mixedRoute, body, { "anthropic-beta": "extra-beta-2026-01-01" })).status, 200)
+  const mixedBeta = last.headers.get("anthropic-beta") ?? ""
+  check("mixed route merges Claude Code beta first", mixedBeta.startsWith("claude-code-20250219"), true)
+  check("mixed route keeps caller beta", mixedBeta.split(",").includes("extra-beta-2026-01-01"), true)
+  check("mixed route supplements anthropic-version", last.headers.get("anthropic-version"), "2023-06-01")
+  check("mixed route supplements dangerous-direct-browser-access", last.headers.get("anthropic-dangerous-direct-browser-access"), "true")
+  check("mixed route supplements X-Stainless-Lang", last.headers.get("x-stainless-lang"), "js")
+  check("mixed route supplements X-App", last.headers.get("x-app"), "cli")
+  check("mixed route retains credentials", last.headers.get("x-api-key"), "synthetic-key")
+  await send(mixedRoute, body, { "user-agent": "other/1" })
+  check("mixed route leaves non-Claude UA without anthropic-beta", last.headers.get("anthropic-beta"), null)
+  check("mixed route leaves non-Claude UA without Stainless", last.headers.get("x-stainless-lang"), null)
   await send(route, body, {}, "/v1/messages/count_tokens")
   check("count tokens unchanged", JSON.parse(new TextDecoder().decode(last.bytes)), body)
   const real = { ...body, system: [{ type: "text", text: "x-anthropic-billing-header: real;" }, ...system] }
