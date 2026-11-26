@@ -10,7 +10,7 @@
 - 修复 `wireOf(p)`：仅当 `p.responses` 为非空字符串（`p.responses.trim() !== ""`）时才视为存在 Responses 地址，避免空字符串覆盖 `baseURL` 中的 `anthropic` 判定。
 - 在 `claude-code` 档案的 `anthropic` 头组补齐 `"anthropic-dangerous-direct-browser-access": "true"`。
 - 增强 `Claude billing 兼容（本地转发）`（`claude-billing.mjs`）：注册路由时携带所属档案的 `anthropic` 伴随头，对处于激活状态且请求 `User-Agent` 为 `claude-cli/x.y.z` 的 Anthropic 转发请求自动补齐缺失的请求头，并将 `anthropic-beta` 去重合并（保留调用方头、过滤受保护的认证与连接头），同时不向 OpenAI / Responses 线路泄露。
-- 验证：5 组隔离自检合计 **471 项检查**全部通过（`selftest.mjs` 336、`selftest-claude-billing.mjs` 50、`selftest-claude-transport.mjs` 22、`selftest-claude-prefill.mjs` 37、`selftest-page.mjs` 26）；未访问报告者中转站或修改日常配置，issue #6 保持开放等待复测确认。
+- 验证：5 组隔离自检合计 **471 项检查**全部通过（`selftest.mjs` 336、`selftest-claude-billing.mjs` 50、`selftest-claude-transport.mjs` 22、`selftest-claude-prefill.mjs` 37、`selftest-page.mjs` 26）；报告者 @juzijun233 已复测确认相同配置下通过测试并关闭 issue #6。
 
 ### English
 
@@ -18,7 +18,7 @@
 - Fixed `wireOf(p)` to treat `p.responses` as present only when `p.responses.trim() !== ""`, preventing an empty string from overriding `anthropic` detection from `baseURL`.
 - Added `"anthropic-dangerous-direct-browser-access": "true"` to the `claude-code` profile's `anthropic` headers.
 - Enhanced the `Claude billing 兼容（本地转发）` loopback transport (`claude-billing.mjs`) to carry the profile's `anthropic` headers per active route and supplement missing companion headers (merging `anthropic-beta` without duplicates while preserving caller headers and blocking protected auth/hop headers) for requests with a `claude-cli/x.y.z` `User-Agent`, without leaking them to OpenAI/Responses endpoints.
-- Validation: all **471 checks** across the 5 isolated selftest suites passed (`selftest.mjs`: 336, `selftest-claude-billing.mjs`: 50, `selftest-claude-transport.mjs`: 22, `selftest-claude-prefill.mjs`: 37, `selftest-page.mjs`: 26). No live config changes or reporter-relay access; issue #6 remains open pending confirmation.
+- Validation: all **471 checks** across the 5 isolated selftest suites passed (`selftest.mjs`: 336, `selftest-claude-billing.mjs`: 50, `selftest-claude-transport.mjs`: 22, `selftest-claude-prefill.mjs`: 37, `selftest-page.mjs`: 26). Reporter @juzijun233 confirmed the same configuration now passes and closed issue #6.
 
 ## 1.9.2 - 2026-11-17
 
